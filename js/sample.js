@@ -20,6 +20,7 @@
       ani: new Float32Array(cap),
       pha: new Float32Array(cap),
       ao: new Float32Array(cap),
+      ori: new Float32Array(cap),
       rng: Math.random,
       scene: null, macro: null, L: [0, 1, 0], lc: [1, 1, 1], ac: [0.2, 0.2, 0.2],
       shadow: false, aoAmt: 1,
@@ -31,7 +32,7 @@
       var d = function (a, k) { var b = new Float32Array(nc * k); b.set(a); return b; };
       B.pos = d(B.pos, 3); B.nor = d(B.nor, 3); B.col = d(B.col, 3);
       B.rad = d(B.rad, 1); B.alp = d(B.alp, 1); B.ani = d(B.ani, 1); B.pha = d(B.pha, 1);
-      B.ao = d(B.ao, 1);
+      B.ao = d(B.ao, 1); B.ori = d(B.ori, 1);
       B.cap = nc;
     }
 
@@ -40,26 +41,21 @@
       var i = B.count++, i3 = i * 3;
       var m = B._matCache[matKey];
       if (!m) {
-        var src = B.mats[matKey] || B.mats.GROUND;
+        var src = B.mats[matKey];
+        if (!src) {
+          // Never substitute an arbitrary ground material: Caelid has no
+          // GROUND entry, and a silent fallback made missing points invisible.
+          if (window.ER && ER.ui && ER.ui.debug) ER.ui.debug('unknown material: ' + matKey, true);
+          throw new Error('unknown material: ' + matKey);
+        }
         m = B._matCache[matKey] = {
-          c: C.hexToRgb(src.color), r: src.r, a: src.a,
-          glow: src.glow || 0, noAO: !!src.noAO, vary: src.vary || 0, nJit: src.nJit || 0, nJit: src.nJit || 0
+          c: C.hexLin ? C.hexLin(src.color) : C.hexToRgb(src.color), r: src.r, a: src.a,
+          glow: src.glow || 0, noAO: !!src.noAO, vary: src.vary || 0, nJit: src.nJit || 0
         };
       }
 
-      // a little normal grain: without it, a smooth cylinder shows a single
-      // hard highlight band instead of reading as bark
-      if (m.nJit) {
-        var jn = m.nJit;
-        nx += (C.noise2(y * 2.7, x * 2.7, 7) - 0.5) * jn;
-        ny += (C.noise2(z * 2.7, y * 2.7, 13) - 0.5) * jn;
-        nz += (C.noise2(x * 2.7, z * 2.7, 19) - 0.5) * jn;
-        var nl = 1 / (Math.hypot(nx, ny, nz) || 1);
-        nx *= nl; ny *= nl; nz *= nl;
-      }
-
-      // a little normal grain: without it, a smooth cylinder shows a single
-      // hard highlight band instead of reading as bark
+      // A little normal grain: without it, a smooth cylinder shows a single
+      // hard highlight band instead of reading as bark. Applied once only.
       if (m.nJit) {
         var jn = m.nJit;
         nx += (C.noise2(y * 2.7, x * 2.7, 7) - 0.5) * jn;
@@ -88,35 +84,43 @@
 
       var sh = 1;
       if (B.shadow) {
-        var t = 0.5, macro2 = B.macro, blocked = false;
+        // Seven taps, but instead of a binary cut we keep the closest
+        // distance/step ratio. That turns the old stamped black patch into a
+        // soft penumbra while costing exactly the same number of samples.
+        var macro2 = B.macro, pen = 1;
         for (var s = 0; s < 7; s++) {
           var d = macro2(x + L[0] * SUN_T[s], y + L[1] * SUN_T[s], z + L[2] * SUN_T[s]);
-          if (d < 0.10) { blocked = true; break; }
-          t = SUN_T[s];
+          if (d < 0.015) { pen = 0; break; }
+          pen = Math.min(pen, 7.5 * d / SUN_T[s]);
         }
-        if (blocked) sh = 0.22;
+        sh = (ER.flags && ER.flags.softshadow === false)
+          ? (pen < 0.001 ? 0.22 : 1)
+          : 0.24 + 0.76 * C.clamp(pen, 0, 1);
       }
 
       var sky = 0.5 + 0.5 * ny;
-      // two lights: a directional key tinted by the realm's sun, plus a
-      // hemispheric bounce tinted by its ambient. This is what stops every
-      // realm from turning into a single flat hue.
-      var kd = (0.07 + 0.93 * key) * sh * ao;
-      var ka = (0.40 + 0.42 * sky) * (0.38 + 0.62 * sh) * ao;
+      // Two lights: a directional key tinted by the realm's sun, plus a
+      // hemispheric bounce tinted by its ambient.
+      var kd = (0.10 + 0.90 * key) * (0.55 + 0.45 * sh) * ao;
+      var ka = (0.36 + 0.44 * sky) * (0.45 + 0.55 * sh) * ao;
       var lr = B.lc[0] * kd + B.ac[0] * ka;
       var lg = B.lc[1] * kd + B.ac[1] * ka;
       var lb = B.lc[2] * kd + B.ac[2] * ka;
 
-      var g = m.glow * 0.55; if (g > 1) g = 1;
+      // Glow keeps its own hue instead of collapsing every emissive surface
+      // toward the same chalk-white core.
+      var g = m.glow * 0.42; if (g > 1) g = 1;
       if (g > 0) {
-        var tgt = 1.2;
-        lr += (tgt - lr) * g; lg += (tgt - lg) * g; lb += (tgt - lb) * g;
+        var tgtR = m.c[0] * 2.4 + 0.12;
+        var tgtG = m.c[1] * 1.65 + 0.08;
+        var tgtB = m.c[2] * 1.05 + 0.04;
+        lr += (tgtR - lr) * g; lg += (tgtG - lg) * g; lb += (tgtB - lb) * g;
       }
 
-      var jit = 0.93 + B.rng() * 0.14;
+      var jit = 0.972 + B.rng() * 0.056;
       var cr = m.c[0] * lr * jit, cg = m.c[1] * lg * jit, cb = m.c[2] * lb * jit;
       if (m.vary) {
-        var tv = 0.70 + 0.58 * C.noise2(x * 0.21, z * 0.21, B.tintSeed);
+        var tv = 0.84 + 0.30 * C.noise2(x * 0.21, z * 0.21, B.tintSeed);
         cr *= tv; cg *= tv; cb *= tv;
       }
 
@@ -128,10 +132,38 @@
       B.ani[i] = anim || 0;
       B.pha[i] = phase === undefined ? B.rng() * C.TAU : phase;
       B.ao[i] = ao * sh;
+      // Zero for loose particles, near one for actual surfaces. The splat
+      // vertex shader uses this to turn a world normal into a screen-space
+      // ellipse without a full 3D covariance representation.
+      B.ori[i] = anim ? 0 : (m.noAO ? 0.55 : 0.9);
       return i;
     };
 
     return B;
+  }
+
+  /* Copy already-baked points when a generator lands a little short. This is
+     deliberately not routed through push(): re-sampling a material would
+     change the baked light and could reference a material the realm lacks. */
+  function cloneRange(B, start, target) {
+    if (target <= start || B.count <= start) return;
+    var n = B.count, guard = 0;
+    while (B.count < target && guard++ < (target - start) * 4) {
+      var src = start + ((B.rng() * (n - start)) | 0);
+      if (src >= n) src = start;
+      var dst = B.count++, s3 = src * 3, d3 = dst * 3;
+      B.pos[d3] = B.pos[s3] + (B.rng() - 0.5) * 0.018;
+      B.pos[d3 + 1] = B.pos[s3 + 1] + (B.rng() - 0.5) * 0.018;
+      B.pos[d3 + 2] = B.pos[s3 + 2] + (B.rng() - 0.5) * 0.018;
+      B.nor[d3] = B.nor[s3]; B.nor[d3 + 1] = B.nor[s3 + 1]; B.nor[d3 + 2] = B.nor[s3 + 2];
+      B.col[d3] = B.col[s3]; B.col[d3 + 1] = B.col[s3 + 1]; B.col[d3 + 2] = B.col[s3 + 2];
+      B.rad[dst] = B.rad[src] * 0.96;
+      B.alp[dst] = B.alp[src] * 0.86;
+      B.ani[dst] = B.ani[src];
+      B.pha[dst] = B.pha[src];
+      B.ao[dst] = B.ao[src];
+      B.ori[dst] = B.ori[src];
+    }
   }
 
   function quotas(emitters, total) {
@@ -174,10 +206,9 @@
     B.macro = scene.macro;
     B.L = scene.light;
     B.mats = scene.mats;
-    B.lc = C.hexToRgb(scene.lightCol || '#ffffff');
-    B.ac = C.hexToRgb(scene.ambient || '#333333');
+    B.lc = C.hexLin(scene.lightCol || '#ffffff');
+    B.ac = C.hexLin(scene.ambient || '#333333');
     B.aoAmt = scene.aoAmt === undefined ? 1 : scene.aoAmt;
-    B.tintSeed = C.fnv1a(scene.id) & 0xffff;
     B.tintSeed = C.fnv1a(scene.id) & 0xffff;
 
     var qs = quotas(scene.emit, target);
@@ -193,7 +224,13 @@
         if (q > 0) {
           B.rng = C.mulberry32(C.fnv1a(scene.id + '|' + seedText + '|' + e.name + '|' + target));
           B.shadow = !!e.shadow;
+          var start = B.count;
           e.fn(B, q, B.rng);
+          // An emitter owns exactly its quota. Excess fixed-detail points are
+          // trimmed here instead of allowing the final global clamp to delete
+          // later emitters (rain, ash, motes, banners).
+          if (B.count > start + q) B.count = start + q;
+          else if (B.count < start + q) cloneRange(B, start, start + q);
         }
         em++;
         if (C.now() - t0 > 12) break;
@@ -201,16 +238,10 @@
       if (onProgress) onProgress(0.08 + 0.78 * (em / scene.emit.length), em, scene.emit.length);
       if (em < scene.emit.length) return nextFrame().then(step);
 
-      // safety pad: keep the readout honest if a generator came up short
-      var guard = 0;
-      while (B.count < target && guard++ < target * 3) {
-        var j = (B.rng() * B.count) | 0;
-        B.push(B.pos[j * 3] + (B.rng() - 0.5) * 0.04,
-               B.pos[j * 3 + 1] + (B.rng() - 0.5) * 0.04,
-               B.pos[j * 3 + 2] + (B.rng() - 0.5) * 0.04,
-               B.nor[j * 3], B.nor[j * 3 + 1], B.nor[j * 3 + 2],
-               'GROUND', 1, 0.6, 0, B.pha[j]);
-      }
+      // Safety pad. Normal operation should already be exact, but if every
+      // emitter somehow lands short we copy baked points rather than assume a
+      // material that the current realm may not define.
+      if (B.count < target) cloneRange(B, 0, target);
       if (B.count > target) B.count = target;
 
       B.hash = hashCloud(B);

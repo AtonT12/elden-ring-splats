@@ -7,7 +7,7 @@
 
   var TEX_W = 2048;          // texels per row in every data texture
   var BUCKETS = 1024;
-  var Z_MIN = -30, Z_MAX = 90;
+  var Z_MIN = -30, Z_MAX = 145;
 
   /* ---------------- shaders ---------------- */
 
@@ -28,6 +28,15 @@
     'uniform float uTime;',
     'uniform float uAnimate;',
     'uniform float uFade;',
+    'uniform float uFocus;',
+    'uniform float uDof;',
+    'uniform float uFogDensity;',
+    'uniform float uFogStart;',
+    'uniform float uFogHeightBase;',
+    'uniform float uFogHeightDensity;',
+    'uniform float uFogHeightFalloff;',
+    'uniform float uFogHeightStrength;',
+    'uniform float uOrient;',
     'in vec2 aCorner;',
     'out vec2 vUv;',
     'out vec3 vCol;',
@@ -36,6 +45,8 @@
     'out float vAlpha;',
     'out float vDepth;',
     'out float vAo;',
+    'out float vFog;',
+    'out float vDof;',
     'flat out int vMode;',
     '',
     'void main() {',
@@ -70,18 +81,53 @@
     '',
     '  vec4 vp = uView * vec4(p, 1.0);',
     '  gl_Position = uProj * vp;',
+    '  float depth = max(-vp.z, 0.05);',
     '  float focal = uProj[1][1] * 0.5 * uFbo.y;',
-    '  float px = A.w * focal / max(-vp.z, 0.05) * uScale;',
+    '  float px = A.w * focal / depth * uScale;',
     '  px = clamp(px, 0.65, uMaxPx);',
-    '  gl_Position.xy += aCorner * (px * 2.0 / uFbo) * gl_Position.w;',
+    '',
+    '  // A surface normal is projected into screen space and used as the short',
+    '  // axis of an ellipse. This is a cheap stand-in for a full 3D covariance:',
+    '  // no matrix inverse, no extra texture, but rocks and bark stop reading as',
+    '  // uniform round cotton. Loose particles have orientation zero.',
+    '  vec3 nView = mat3(uView) * normalize(Cn.xyz);',
+    '  vec2 tilt = nView.xy;',
+    '  float tl = length(tilt);',
+    '  vec2 ax = tl > 0.045 ? tilt / tl : vec2(0.88, 0.47);',
+    '  vec2 ay = vec2(-ax.y, ax.x);',
+    '  float ori = clamp(Dp.z, 0.0, 1.0) * uOrient;',
+    '  float ratio = mix(1.0, clamp(1.0 - tl * 0.62, 0.56, 1.0), ori);',
+    '  float minor = px * ratio;',
+    '  float major = px / max(ratio, 0.60);',
+    '',
+    '  // Single-pass scattering DOF. Defocused splats grow slightly and lose',
+    '  // alpha so the result softens without becoming a field of bright discs.',
+    '  float coc = clamp(abs(depth - uFocus) / max(uFocus, 1.0) * uDof, 0.0, 1.0);',
+    '  major *= 1.0 + coc * 1.25;',
+    '  minor *= 1.0 + coc * 0.45;',
+    '  vec2 offset = (aCorner.x * ax * minor + aCorner.y * ay * major) * (2.0 / uFbo);',
+    '  gl_Position.xy += offset * gl_Position.w;',
+    '',
+    '  // Analytic exponential height fog integrated along the camera ray.',
+    '  float depthFog = max(0.0, depth - uFogStart) * uFogDensity;',
+    '  float dy = p.y - uEye.y;',
+    '  float h0 = uFogHeightDensity * exp(-uFogHeightFalloff * max(0.0, uEye.y - uFogHeightBase));',
+    '  float heightFog;',
+    '  if (abs(dy) > 0.20) {',
+    '    heightFog = h0 * depth * (1.0 - exp(-uFogHeightFalloff * dy)) / (uFogHeightFalloff * dy);',
+    '  } else {',
+    '    heightFog = h0 * depth;',
+    '  }',
+    '  vFog = 1.0 - exp(-(depthFog + max(0.0, heightFog) * uFogHeightStrength));',
     '',
     '  vUv = aCorner;',
     '  vCol = Bc.rgb;',
-    '  vAlpha = Bc.a * uFade;',
+    '  vAlpha = Bc.a * uFade / (1.0 + coc * 1.4);',
     '  vNrm = Cn.xyz;',
     '  vView = normalize(p - uEye);',
-    '  vDepth = -vp.z;',
+    '  vDepth = depth;',
     '  vAo = Dp.y;',
+    '  vDof = coc;',
     '  vMode = mode;',
     '}'
   ].join('\n');
@@ -96,12 +142,13 @@
     'in float vAlpha;',
     'in float vDepth;',
     'in float vAo;',
+    'in float vFog;',
+    'in float vDof;',
     'flat in int vMode;',
     'uniform int uSplatView;',
     'uniform int uViewMode;',
     'uniform vec3 uFogColor;',
-    'uniform float uFogDensity;',
-    'uniform float uFogStart;',
+    'uniform vec3 uRimCol;',
     'uniform float uRim;',
     'out vec4 outColor;',
     '',
@@ -115,10 +162,10 @@
     '  }',
     '  a *= vAlpha;',
     '  if (a < 0.010) discard;',
-    '  float fog = 1.0 - exp(-max(0.0, vDepth - uFogStart) * uFogDensity);',
-    '  vec3 col = mix(vCol, uFogColor, fog);',
+    '  float fog = clamp(vFog, 0.0, 1.0);',
     '  float rim = pow(1.0 - abs(dot(normalize(vNrm), vView)), 3.0);',
-    '  col += rim * uRim;',
+    '  vec3 col = vCol + uRimCol * rim * uRim;',
+    '  col = mix(col, uFogColor, fog);',
     '  if (uViewMode == 1) col = vNrm * 0.5 + 0.5;',
     '  else if (uViewMode == 2) col = vec3(vAo);',
     '  else if (uViewMode == 3) col = vec3(fract(vDepth * 0.08));',
@@ -144,9 +191,16 @@
     'uniform vec3 uSkyBot;',
     'uniform vec3 uSunCol;',
     'uniform vec2 uSunPos;',
+    'uniform float uSunDisc;',
+    'uniform vec3 uFogColor;',
     'uniform vec2 uMoonPos;',
     'uniform vec3 uMoonCol;',
     'uniform vec2 uMoonPar;',
+    'uniform float uSkyYaw;',
+    'uniform float uSkyTime;',
+    'uniform float uExposure;',
+    'uniform float uBloom;',
+    'uniform int uViewMode;',
     'uniform float uDither;',
     'uniform float uPixelArt;',
     'uniform float uVignette;',
@@ -157,38 +211,102 @@
     'float bayer4(vec2 a) { return bayer2(0.5 * a) * 0.25 + bayer2(a); }',
     'float bayer8(vec2 a) { return bayer4(0.5 * a) * 0.25 + bayer2(a); }',
     '',
+    'float hash21(vec2 p) {',
+    '  p = fract(p * vec2(123.34, 456.21));',
+    '  p += dot(p, p + 45.32);',
+    '  return fract(p.x * p.y);',
+    '}',
+    'float vnoiseS(vec2 p) {',
+    '  vec2 i = floor(p), f = fract(p);',
+    '  f = f * f * (3.0 - 2.0 * f);',
+    '  float a = hash21(i), b = hash21(i + vec2(1.0, 0.0));',
+    '  float c = hash21(i + vec2(0.0, 1.0)), d = hash21(i + vec2(1.0, 1.0));',
+    '  return mix(mix(a, b, f.x), mix(c, d, f.x), f.y);',
+    '}',
+    'float fbmS(vec2 p) {',
+    '  float a = 0.5, v = 0.0;',
+    '  for (int i = 0; i < 4; i++) { v += a * vnoiseS(p); p = p * 2.03 + 7.1; a *= 0.5; }',
+    '  return v;',
+    '}',
+    '',
+    'vec3 aces(vec3 x) {',
+    '  return clamp((x * (2.51 * x + 0.03)) / (x * (2.43 * x + 0.59) + 0.14), 0.0, 1.0);',
+    '}',
+    '',
     'vec3 skyAt(vec2 uv) {',
     '  float h = uv.y;',
-    '  vec3 s = mix(uSkyHor, uSkyTop, smoothstep(0.36, 1.0, h));',
-    '  s = mix(uSkyBot, s, smoothstep(0.0, 0.36, h));',
-    '  // faint bloom standing where the light comes from',
+    '  vec3 s = mix(uSkyHor, uSkyTop, smoothstep(0.32, 1.0, h));',
+    '  s = mix(uSkyBot, s, smoothstep(0.0, 0.34, h));',
+    '',
+    '  // A slow cloud deck, not a flat gradient. It is anchored to camera yaw so',
+    '  // it does not swim when the diorama is orbited.',
+    '  vec2 cp = vec2(((uv.x - 0.5) * (uRes.x / uRes.y) * 2.1 + uSkyYaw), h * 3.1 - uSkyTime * 0.006);',
+    '  float deck = fbmS(cp * 3.1 + vec2(2.3, 8.1));',
+    '  float band = smoothstep(0.30, 0.54, h) * (1.0 - smoothstep(0.80, 0.99, h));',
+    '  float cloud = smoothstep(0.47, 0.70, deck) * band;',
+    '  vec3 cloudCol = mix(uFogColor, uSunCol, 0.30);',
+    '  s = mix(s, cloudCol, cloud * 0.18);',
+    '',
+    '  float horizon = exp(-pow((h - 0.42) * 5.2, 2.0));',
+    '  s += cloudCol * horizon * 0.025;',
     '  vec2 d = (uv - uSunPos) * vec2(uRes.x / uRes.y, 1.0);',
-    '  float g = exp(-dot(d, d) * 9.0) * 0.20 + exp(-dot(d, d) * 1.8) * 0.06;',
-    '  return s + uSunCol * g;',
+    '  float sd = length(d);',
+    '  float g = exp(-sd * sd * 12.0) * 0.16 + exp(-sd * sd * 3.8) * 0.014;',
+    '  float disc = 1.0 - smoothstep(0.055, 0.085, sd);',
+    '  s += uSunCol * (g + disc * uSunDisc);',
+    '  return s;',
     '}',
     '',
     'void main() {',
     '  vec4 sc = texture(uScene, vUv);',
-    '  vec3 c = sc.rgb + skyAt(vUv) * (1.0 - sc.a);',
+    '  vec3 sky = skyAt(vUv);',
     '',
+    '  // The moon belongs to the sky. Add it before compositing the scene so',
+    '  // castle walls and branches occlude it instead of being painted over.',
     '  vec2 asp = vec2(uRes.x / uRes.y, 1.0);',
     '  float md = length((vUv - uMoonPos) * asp);',
     '  float disc = 1.0 - smoothstep(uMoonPar.x * 0.92, uMoonPar.x, md);',
-    '  float ring = exp(-max(0.0, md - uMoonPar.x) * 8.0) * 0.09;',
-    '  c = mix(c, uMoonCol, disc * uMoonPar.y);',
-    '  c += uMoonCol * ring * uMoonPar.y;',
+    '  vec2 moonP = (vUv - uMoonPos) * asp / max(uMoonPar.x, 0.001);',
+    '  float mottle = 0.80 + 0.20 * vnoiseS(moonP * 7.0 + vec2(3.4, 9.1));',
+    '  float ring = exp(-max(0.0, md - uMoonPar.x) * 8.0) * 0.12;',
+    '  sky = mix(sky, uMoonCol * mottle, disc * uMoonPar.y);',
+    '  sky += uMoonCol * ring * uMoonPar.y;',
     '',
-    '  float b = bayer8(gl_FragCoord.xy) - 0.5;',
-    '  vec3 d = c + b * uDither * 0.075;',
-    '  vec3 q = c;',
-    '  float best = 1e9;',
-    '  for (int i = 0; i < 16; i++) {',
-    '    vec3 dd = uPal[i] - d;',
-    '    vec3 w = dd * vec3(0.92, 1.0, 0.74);',
-    '    float dist = dot(w, w);',
-    '    if (dist < best) { best = dist; q = uPal[i]; }',
+    '  float cover = clamp(sc.a, 0.0, 1.0);',
+    '  vec3 c = sc.rgb + sky * (1.0 - cover);',
+    '',
+    '  if (uViewMode > 0) {',
+    '    outColor = vec4(c, 1.0);',
+    '    return;',
     '  }',
-    '  c = mix(c, q, uPixelArt);',
+    '',
+    '  // Small five-tap HDR glow in the existing post pass. No extra FBO, no',
+    '  // wide blur chain; thresholding keeps stone from turning milky.',
+    '  vec2 tx = 1.0 / uRes;',
+    '  vec3 glow = max(texture(uScene, vUv + vec2(1.6, 0.4) * tx).rgb - vec3(0.52), 0.0)',
+    '            + max(texture(uScene, vUv + vec2(-1.4, 0.9) * tx).rgb - vec3(0.52), 0.0)',
+    '            + max(texture(uScene, vUv + vec2(0.3, -1.7) * tx).rgb - vec3(0.52), 0.0)',
+    '            + max(texture(uScene, vUv + vec2(-2.2, -0.5) * tx).rgb - vec3(0.52), 0.0);',
+    '  glow *= 0.25 * uBloom;',
+    '',
+    '  c *= uExposure;',
+    '  c += glow;',
+    '  c = aces(c);',
+    '  c = pow(max(c, 0.0), vec3(1.0 / 2.2));',
+    '',
+    '  if (uPixelArt > 0.5) {',
+    '    float b = bayer8(gl_FragCoord.xy) - 0.5;',
+    '    vec3 d = c + b * uDither * 0.075;',
+    '    vec3 q = c;',
+    '    float best = 1e9;',
+    '    for (int i = 0; i < 16; i++) {',
+    '      vec3 dd = uPal[i] - d;',
+    '      vec3 w = dd * vec3(0.92, 1.0, 0.74);',
+    '      float dist = dot(w, w);',
+    '      if (dist < best) { best = dist; q = uPal[i]; }',
+    '    }',
+    '    c = q;',
+    '  }',
     '',
     '  vec2 v = (vUv - 0.5) * vec2(1.02, 1.1);',
     '  c *= 1.0 - uVignette * dot(v, v);',
@@ -230,7 +348,8 @@
   function init(canvas) {
     var gl = canvas.getContext('webgl2', {
       antialias: false, alpha: false, depth: false,
-      powerPreference: 'high-performance', preserveDrawingBuffer: true
+      powerPreference: 'high-performance',
+      preserveDrawingBuffer: location.search.indexOf('capture=1') >= 0
     });
     if (!gl) throw new Error('WebGL2 unavailable');
 
@@ -241,8 +360,9 @@
       w: canvas.width, h: canvas.height,
       count: 0, order: null, cloud: null, scene: null,
       sortMs: 0, drawMs: 0,
-      quality: 3, maxPx: 48, splatScale: 1,
-      opts: { pixelArt: 1, splatView: 0, dither: 0.6, animate: 1, fade: 1 },
+      quality: 2, maxPx: 30, splatScale: 1,
+      exposure: 1.25, bloom: 0.08,
+      opts: { pixelArt: 0, splatView: 0, dither: 0.6, animate: 1, fade: 1, dof: 1.15, bloom: 0.08, orient: 1 },
       renderer: (function () {
         var dbg = gl.getExtension('WEBGL_debug_renderer_info');
         return dbg ? gl.getParameter(dbg.UNMASKED_RENDERER_WEBGL) : 'webgl2';
@@ -253,11 +373,14 @@
     R.progPost = program(gl, VS_POST, FS_POST);
     R.uSplat = uniforms(gl, R.progSplat, [
       'uData', 'uOrder', 'uView', 'uProj', 'uEye', 'uFbo', 'uScale', 'uMaxPx', 'uTime',
-      'uAnimate', 'uFade', 'uSplatView', 'uViewMode', 'uFogColor', 'uFogDensity', 'uFogStart', 'uRim'
+      'uAnimate', 'uFade', 'uSplatView', 'uViewMode', 'uFogColor', 'uFogDensity', 'uFogStart',
+      'uRim', 'uRimCol', 'uFocus', 'uDof', 'uFogHeightBase', 'uFogHeightDensity',
+      'uFogHeightFalloff', 'uFogHeightStrength', 'uOrient'
     ]);
     R.uPost = uniforms(gl, R.progPost, [
-      'uScene', 'uRes', 'uSkyTop', 'uSkyHor', 'uSkyBot', 'uSunCol', 'uSunPos',
-      'uMoonPos', 'uMoonCol', 'uMoonPar', 'uDither', 'uPixelArt', 'uVignette', 'uPal'
+      'uScene', 'uRes', 'uSkyTop', 'uSkyHor', 'uSkyBot', 'uSunCol', 'uSunPos', 'uSunDisc', 'uFogColor',
+      'uMoonPos', 'uMoonCol', 'uMoonPar', 'uSkyYaw', 'uSkyTime',
+      'uExposure', 'uBloom', 'uViewMode', 'uDither', 'uPixelArt', 'uVignette', 'uPal'
     ]);
 
     /* corner quad */
@@ -335,11 +458,14 @@
 
     R.applySky = function (scene) {
       R.scene = scene;
-      R.skyTop = C.hexToRgb(scene.sky.top);
-      R.skyHor = C.hexToRgb(scene.sky.horizon);
-      R.skyBot = C.hexToRgb(scene.sky.bottom);
-      R.sunCol = C.hexToRgb(scene.lightCol || '#ffffff');
-      R.fog = C.hexToRgb(scene.fog.color);
+      R.skyTop = C.hexLin(scene.sky.top);
+      R.skyHor = C.hexLin(scene.sky.horizon);
+      R.skyBot = C.hexLin(scene.sky.bottom);
+      R.sunCol = C.hexLin(scene.lightCol || '#ffffff');
+      R.fog = C.hexLin(scene.fog.color);
+      R.exposure = scene.exposure === undefined ? 1.25 : scene.exposure;
+      // Palette values are display-space sRGB: quantisation happens after
+      // tone mapping and gamma, never in the linear scene buffer.
       R.palette = new Float32Array(48);
       for (var i = 0; i < 16; i++) {
         var c = C.hexToRgb(scene.palette[i] || '#000000');
@@ -348,10 +474,15 @@
         R.palette[i * 3 + 2] = c[2];
       }
       R.sunPos = scene.sunUv || [0.5, 0.58];
+      R.sunDisc = scene.sunDisc === undefined ? 0.18 : scene.sunDisc;
       var mo = scene.moon || { pos: [0.5, 0.5], size: 0.06, color: '#ffffff', i: 0 };
       R.moonPos = mo.pos;
-      R.moonCol = C.hexToRgb(mo.color);
+      R.moonCol = C.hexLin(mo.color);
       R.moonPar = [mo.size, mo.i];
+      var fh = scene.fog.height || { base: 0, density: 0.008, falloff: 0.24, strength: 0.8 };
+      R.fogHeight = (ER.flags && ER.flags.fog2 === false)
+        ? { base: fh.base, density: 0, falloff: fh.falloff, strength: 0 }
+        : fh;
     };
 
     /* upload a cloud into the data texture */
@@ -375,7 +506,8 @@
         buf[b + 11] = cloud.ani[i];
         buf[b + 12] = cloud.pha[i];
         buf[b + 13] = cloud.ao ? cloud.ao[i] : 1;
-        buf[b + 14] = 0; buf[b + 15] = 0;
+        buf[b + 14] = cloud.ori ? cloud.ori[i] : 0.7;
+        buf[b + 15] = 0;
       }
       gl.bindTexture(gl.TEXTURE_2D, R.dataTex);
       gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA32F, TEX_W, h, 0, gl.RGBA, gl.FLOAT, buf);
@@ -468,7 +600,18 @@
       gl2.uniform3fv(R.uSplat.uFogColor, R.fog);
       gl2.uniform1f(R.uSplat.uFogDensity, R.scene.fog.density);
       gl2.uniform1f(R.uSplat.uFogStart, R.scene.fog.start);
-      gl2.uniform1f(R.uSplat.uRim, 0.14);
+      gl2.uniform3fv(R.uSplat.uRimCol, R.sunCol);
+      gl2.uniform1f(R.uSplat.uRim, 0.10);
+      gl2.uniform1f(R.uSplat.uFocus, Math.hypot(
+        cam.target[0] - cam.eye()[0],
+        cam.target[1] - cam.eye()[1],
+        cam.target[2] - cam.eye()[2]));
+      gl2.uniform1f(R.uSplat.uDof, R.opts.dof || 0);
+      gl2.uniform1f(R.uSplat.uFogHeightBase, R.fogHeight.base);
+      gl2.uniform1f(R.uSplat.uFogHeightDensity, R.fogHeight.density);
+      gl2.uniform1f(R.uSplat.uFogHeightFalloff, R.fogHeight.falloff);
+      gl2.uniform1f(R.uSplat.uFogHeightStrength, R.fogHeight.strength);
+      gl2.uniform1f(R.uSplat.uOrient, R.opts.orient);
 
       gl2.drawArraysInstanced(gl2.TRIANGLE_STRIP, 0, 4, R.count);
 
@@ -488,12 +631,19 @@
       gl2.uniform3fv(R.uPost.uSkyBot, R.skyBot);
       gl2.uniform3fv(R.uPost.uSunCol, R.sunCol);
       gl2.uniform2f(R.uPost.uSunPos, R.sunPos[0], R.sunPos[1]);
+      gl2.uniform1f(R.uPost.uSunDisc, R.sunDisc);
+      gl2.uniform3fv(R.uPost.uFogColor, R.fog);
       gl2.uniform2f(R.uPost.uMoonPos, R.moonPos[0], R.moonPos[1]);
       gl2.uniform3fv(R.uPost.uMoonCol, R.moonCol);
       gl2.uniform2f(R.uPost.uMoonPar, R.moonPar[0], R.moonPar[1]);
+      gl2.uniform1f(R.uPost.uSkyYaw, cam.yaw * 0.62);
+      gl2.uniform1f(R.uPost.uSkyTime, time);
+      gl2.uniform1f(R.uPost.uExposure, R.exposure);
+      gl2.uniform1f(R.uPost.uBloom, R.opts.bloom || 0);
+      gl2.uniform1i(R.uPost.uViewMode, R.opts.viewMode || 0);
       gl2.uniform1f(R.uPost.uDither, R.opts.dither);
       gl2.uniform1f(R.uPost.uPixelArt, R.opts.pixelArt);
-      gl2.uniform1f(R.uPost.uVignette, 0.42);
+      gl2.uniform1f(R.uPost.uVignette, R.opts.pixelArt > 0.5 ? 0.18 : 0.10);
       gl2.uniform3fv(R.uPost.uPal, R.palette);
 
       gl2.drawArrays(gl2.TRIANGLE_STRIP, 0, 4);
@@ -517,18 +667,28 @@
         ' hdr:' + (R.floatTarget ? 'rgba16f' : 'rgba8');
     };
 
-    R.setQuality = function (q) {      R.quality = q;
-      var table = [
-        { px: 6, maxPx: 24 },
-        { px: 5, maxPx: 32 },
-        { px: 4, maxPx: 40 },
-        { px: 3, maxPx: 52 }
-      ];
-      R.maxPx = table[q].maxPx;
-      return table[q].px;
+    var QUALITY = [
+      { w: 640, h: 360, maxPx: 18, dof: 0.00, bloom: 0.00 },
+      { w: 800, h: 450, maxPx: 24, dof: 0.75, bloom: 0.00 },
+      { w: 1024, h: 576, maxPx: 30, dof: 1.15, bloom: 0.08 },
+      { w: 1280, h: 720, maxPx: 38, dof: 1.60, bloom: 0.13 }
+    ];
+
+    R.qualitySpec = function (q) {
+      q = Math.max(0, Math.min(3, q | 0));
+      return QUALITY[q];
     };
 
-    ER.render.instance = R;
+    R.setQuality = function (q) {
+      q = Math.max(0, Math.min(3, q | 0));
+      R.quality = q;
+      var spec = QUALITY[q];
+      R.maxPx = spec.maxPx;
+      R.opts.dof = spec.dof;
+      R.opts.bloom = spec.bloom;
+      return spec;
+    };
+
     ER.render.instance = R;
     return R;
   }

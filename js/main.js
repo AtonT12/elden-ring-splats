@@ -4,17 +4,37 @@
   var C = ER.core;
 
   var qp = new URLSearchParams(location.search);
+  function qInt(name, fallback, lo, hi) {
+    if (qp.get(name) === null) return fallback;
+    var n = parseInt(qp.get(name), 10);
+    if (!isFinite(n)) n = fallback;
+    return C.clamp(n, lo, hi);
+  }
+  function qNum(name, fallback, lo, hi) {
+    if (qp.get(name) === null) return fallback;
+    var n = parseFloat(qp.get(name));
+    if (!isFinite(n)) n = fallback;
+    return C.clamp(n, lo, hi);
+  }
   var Q = {
     realm: qp.get('realm'),
     seed: qp.get('seed'),
-    count: qp.get('count') ? parseInt(qp.get('count'), 10) : null,
-    px: qp.get('px') ? parseInt(qp.get('px'), 10) : null,
+    count: qInt('count', null, 20000, 90000),
+    px: qInt('px', null, 2, 8),
     freeze: qp.get('freeze') === '1',
-    quality: qp.get('quality') !== null ? parseInt(qp.get('quality'), 10) : null,
+    quality: qInt('quality', null, 0, 3),
     view: qp.get('view') || 'normal',
     sort: qp.get('sort') !== 'off',
+    sortHz: qInt('sortHz', 15, 4, 60),
     debug: qp.get('debug') === '1',
     selftest: qp.get('selftest') === '1',
+    orient: qp.get('orient') !== '0',
+    fog2: qp.get('fog2') !== '0',
+    dof: qp.get('dof') !== '0',
+    bloom: qp.get('bloom') !== '0',
+    grade: qp.get('grade') !== '0',
+    far: qp.get('far') !== '0',
+    terrain: qp.get('terrain') !== '0',
     yaw: qp.get('yaw') ? parseFloat(qp.get('yaw')) : null,
     pitch: qp.get('pitch') ? parseFloat(qp.get('pitch')) : null,
     dist: qp.get('dist') ? parseFloat(qp.get('dist')) : null
@@ -24,11 +44,19 @@
     state: 'boot', realm: 'erdtree', seed: 'aster',
     count: 60000, time: 0, paused: false,
     fps: 0, frameMs: 16.7, genMs: 0, sortMs: 0,
-    dirtySort: true, lastStats: 0, autoQuality: true, lowFor: 0, highFor: 0,
+    dirtySort: true, lastStats: 0, lastAutoAt: 0, autoQuality: true, lowFor: 0, highFor: 0,
+    needsDraw: true, countTimer: 0,
     cache: {}, cacheOrder: []
   };
 
-  var R, cam, UI, S, canvas, lastT = 0;
+  var R, cam, UI, S, canvas, lastT = 0, lastSort = 0, relayoutPending = false;
+  ER.flags = {
+    far: Q.far,
+    terrain: Q.terrain,
+    fog2: Q.fog2,
+    orient: Q.orient,
+    softshadow: qp.get('softshadow') !== '0'
+  };
 
   /* ---------------- boot ---------------- */
   function boot() {
@@ -37,17 +65,10 @@
     S = ER.ui.init();
     if (Q.realm && ER.sdf.scenes[Q.realm]) app.realm = Q.realm;
     if (Q.seed) app.seed = Q.seed;
-    if (Q.count) {
-      app.count = Q.count; S.count = Q.count;
-      document.getElementById('count').value = Q.count;
-      document.getElementById('count-out').textContent = Q.count.toLocaleString('en-US');
-    }
-    if (Q.px) {
-      S.px = Q.px;
-      document.getElementById('px').value = Q.px;
-      document.getElementById('px-out').textContent = Q.px + ' px';
-    }
-    document.getElementById('seed').value = app.seed;
+    if (Q.count) app.count = Q.count;
+    if (Q.px) S.px = Q.px;
+    UI.setSeed(app.seed);
+    UI.setCount(app.count);
     UI.setRealm(app.realm);
 
     try {
@@ -56,16 +77,41 @@
       document.getElementById('load-msg').textContent = 'webgl2 unavailable — ' + e.message;
       return;
     }
-    if (Q.quality !== null) { S.px = R.setQuality(Q.quality); app.autoQuality = false; }
+
+    var initialQuality = Q.quality === null
+      ? (window.innerWidth >= 1280 ? 3 : 2)
+      : Q.quality;
+    R.setQuality(initialQuality);
+    if (Q.quality !== null) app.autoQuality = false;
     R.opts.viewMode = Q.view === 'normals' ? 1 : Q.view === 'ao' ? 2 : Q.view === 'depth' ? 3 : 0;
-    if (qp.get('pa') === '0') R.opts.pixelArt = 0;
-    if (qp.get('dith') !== null) R.opts.dither = parseFloat(qp.get('dith'));
-    if (qp.get('fade')) R.opts.fade = parseFloat(qp.get('fade'));
+    var startPixel = qp.get('pa') === '1';
+    var startDitherAmount = qNum('dith', 0.6, 0, 1);
+    var startDither = startPixel && startDitherAmount > 0;
+    UI.setPixelMode(startPixel);
+    UI.setDither(startDither, startDitherAmount);
+    UI.setScaleLabel(startPixel, R.quality, S.px);
+    S.pixelArt = startPixel;
+    S.ditherOn = startDither;
+    S.ditherAmount = startDitherAmount;
+    R.opts.pixelArt = startPixel ? 1 : 0;
+    R.opts.dither = startDither ? startDitherAmount : 0;
+    if (qp.get('fade')) R.opts.fade = qNum('fade', 1, 0, 1);
+    if (!Q.dof) R.opts.dof = 0;
+    if (!Q.bloom) R.opts.bloom = 0;
+    if (!Q.orient) R.opts.orient = 0;
+    if (Q.freeze) R.opts.animate = 0;
 
     var scene = ER.sdf.scenes[app.realm];
     cam = ER.camera.create(scene.camera);
-    cam.auto = !Q.freeze;
+    var reduceMotion = window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+    cam.auto = !Q.freeze && !reduceMotion;
     cam.paused = Q.freeze;
+    if (!cam.auto) {
+      S.autoOrbit = false;
+      var tr = document.getElementById('t-rotate');
+      tr.classList.remove('on');
+      tr.setAttribute('aria-pressed', 'false');
+    }
     if (Q.yaw !== null) cam.yaw = Q.yaw;
     if (Q.pitch !== null) cam.pitch = Q.pitch;
     if (Q.dist !== null) { cam.dist = Q.dist; cam.tDist = Q.dist; }
@@ -94,21 +140,46 @@
     ER.bus.on('realm', function (id) { switchRealm(id); });
     ER.bus.on('seed', function (v) { app.seed = v; rebuild(); });
     ER.bus.on('param', function (p) {
-      if (p.key === 'size') { R.splatScale = p.value; app.dirtySort = true; }
-      else if (p.key === 'px') { app.autoQuality = false; relayout(); }
-      else if (p.key === 'dither') { R.opts.dither = p.value; }
-      else if (p.key === 'count') { app.count = p.value; }
+      if (p.key === 'size') { R.splatScale = p.value; app.dirtySort = true; app.needsDraw = true; }
+      else if (p.key === 'px') { S.px = p.value; app.autoQuality = false; queueRelayout(); }
+      else if (p.key === 'ditherAmount') {
+        S.ditherAmount = p.value;
+        R.opts.dither = (S.ditherOn && S.pixelArt) ? p.value : 0;
+        app.needsDraw = true;
+      } else if (p.key === 'count') {
+        S.count = p.value;
+        app.count = p.value;
+        clearTimeout(app.countTimer);
+        app.countTimer = setTimeout(rebuild, 520);
+      }
     });
     ER.bus.on('toggle', function (t) {
-      if (t.key === 'pixelArt') R.opts.pixelArt = t.value ? 1 : 0;
-      else if (t.key === 'splatView') R.opts.splatView = t.value ? 1 : 0;
-      else if (t.key === 'animate') R.opts.animate = t.value ? 1 : 0;
-      else if (t.key === 'autoOrbit') cam.auto = t.value;
-      else if (t.key === 'dither') R.opts.dither = t.value ? S.dither : 0;
+      if (t.key === 'pixelArt') {
+        S.pixelArt = t.value;
+        R.opts.pixelArt = t.value ? 1 : 0;
+        R.opts.dither = (t.value && S.ditherOn) ? S.ditherAmount : 0;
+        UI.setPixelMode(t.value);
+        UI.setDither(S.ditherOn, S.ditherAmount);
+        UI.setScaleLabel(t.value, R.quality, S.px);
+        app.needsDraw = true;
+        queueRelayout();
+      } else if (t.key === 'splatView') {
+        R.opts.splatView = t.value ? 1 : 0; app.needsDraw = true;
+      } else if (t.key === 'animate') {
+        R.opts.animate = t.value ? 1 : 0; app.needsDraw = true;
+      } else if (t.key === 'autoOrbit') {
+        cam.auto = t.value; app.needsDraw = true;
+      } else if (t.key === 'ditherOn') {
+        S.ditherOn = t.value;
+        R.opts.dither = (t.value && S.pixelArt) ? S.ditherAmount : 0;
+        app.needsDraw = true;
+      }
     });
     ER.bus.on('action', function (a) {
-      if (a === 'reset') { cam.reset(ER.sdf.scenes[app.realm].camera, 650); app.dirtySort = true; }
-      else if (a === 'relayout') relayout();
+      if (a === 'reset') {
+        cam.reset(ER.sdf.scenes[app.realm].camera, 650);
+        app.dirtySort = true; app.needsDraw = true;
+      } else if (a === 'relayout') queueRelayout();
     });
   }
 
@@ -216,11 +287,25 @@
 
   /* ---------------- layout ---------------- */
   function relayout() {
-    var L = ER.ui.layout(S.px);
+    var L = ER.ui.layout({
+      pixelArt: S.pixelArt,
+      px: S.px,
+      res: R.qualitySpec(R.quality)
+    });
     R.resize(L.iw, L.ih);
-    if (R.scene) R.applySky(R.scene);
+    UI.setScaleLabel(S.pixelArt, R.quality, S.px);
     UI.stats({ res: L.iw + '\u00d7' + L.ih });
     app.dirtySort = true;
+    app.needsDraw = true;
+  }
+
+  function queueRelayout() {
+    if (relayoutPending) return;
+    relayoutPending = true;
+    requestAnimationFrame(function () {
+      relayoutPending = false;
+      relayout();
+    });
   }
 
   /* ---------------- input ---------------- */
@@ -241,11 +326,14 @@
       if (dragging === 2) cam.pan(dx, dy);
       else cam.drag(dx, dy);
       app.dirtySort = true;
+      app.needsDraw = true;
     });
     function up(e) {
       if (!dragging) return;
       dragging = 0;
       canvas.style.cursor = 'grab';
+      app.dirtySort = true;
+      app.needsDraw = true;
       try { canvas.releasePointerCapture(e.pointerId); } catch (err) { }
     }
     canvas.addEventListener('pointerup', up);
@@ -255,11 +343,18 @@
       e.preventDefault();
       cam.wheel(e.deltaY);
       app.dirtySort = true;
+      app.needsDraw = true;
     }, { passive: false });
 
+    canvas.addEventListener('dblclick', function () {
+      ER.bus.emit('action', 'reset');
+    });
+
     window.addEventListener('keydown', function (e) {
-      if (e.target && e.target.tagName === 'INPUT') return;
+      var tag = e.target && e.target.tagName;
+      if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT') return;
       var k = e.key;
+      if (k === ' ' && tag === 'BUTTON') return;
       if (k === '1') ER.bus.emit('realm', 'erdtree');
       else if (k === '2') ER.bus.emit('realm', 'limgrave');
       else if (k === '3') ER.bus.emit('realm', 'caelid');
@@ -269,6 +364,7 @@
         e.preventDefault();
         app.paused = !app.paused;
         cam.paused = app.paused;
+        app.needsDraw = true;
       }
     });
   }
@@ -277,18 +373,32 @@
   function loop(t) {
     requestAnimationFrame(loop);
     var now = C.now();
+    if (document.hidden) { lastT = now; return; }
     var dt = Math.min(0.05, (now - lastT) / 1000);
     lastT = now;
 
+    var animating = !app.paused && R.opts.animate > 0.5;
     if (!app.paused) app.time += dt;
     var moved = cam.update(dt);
+    var justResized = app.needsDraw;
 
     if (Q.sort && (moved || app.dirtySort) && app.time !== undefined) {
-      R.sort(cam);
-      app.dirtySort = false;
+      var interval = 1000 / Math.max(4, Q.sortHz);
+      // While orbiting, sort at a bounded rate. Once motion stops, a pending
+      // dirty flag forces one final exact ordering before the frame is drawn.
+      if ((app.dirtySort && !moved) || now - lastSort >= interval) {
+        R.sort(cam);
+        lastSort = now;
+        app.dirtySort = false;
+      }
     }
-    R.draw(cam, app.time, R.w / R.h);
-    ER.app.renderer = R;
+
+    if (animating || moved || app.dirtySort || justResized || !app.paused || app.forceDraw) {
+      R.draw(cam, app.time, R.w / R.h);
+      app.needsDraw = false;
+      app.forceDraw = false;
+    }
+
     ER.app.renderer = R;
 
     if (Q.debug && !app._diag) {
@@ -296,8 +406,11 @@
       ER.ui.debug('webgl2 · ' + R.renderer + '\n' + R.diagnose(), true);
     }
 
-    app.frameMs = app.frameMs * 0.9 + (dt * 1000) * 0.1;
-    app.fps = 1000 / Math.max(0.1, app.frameMs);
+    // Ignore the first long frame after a tab switch or build pause.
+    if (dt < 0.5) {
+      app.frameMs = app.frameMs * 0.9 + (dt * 1000) * 0.1;
+      app.fps = 1000 / Math.max(0.1, app.frameMs);
+    }
 
     if (now - app.lastStats > 240) {
       app.lastStats = now;
@@ -305,32 +418,35 @@
         fps: app.fps, frame: app.frameMs, sort: R.sortMs,
         splats: R.count, res: R.w + '\u00d7' + R.h
       });
-      autoQuality(dt, now);
+      autoQuality(now);
     }
   }
 
-  function autoQuality(dt) {
-    if (!app.autoQuality || Q.quality !== null) return;
-    if (app.fps < 33) { app.lowFor += dt; app.highFor = 0; }
-    else if (app.fps > 56) { app.highFor += dt; app.lowFor = 0; }
-    else { app.lowFor = Math.max(0, app.lowFor - dt * 0.5); }
+  function autoQuality(now) {
+    if (!app.autoQuality || Q.quality !== null || app.paused) { app.lastAutoAt = now; return; }
+    var elapsed = app.lastAutoAt ? Math.min(1.5, (now - app.lastAutoAt) / 1000) : 0;
+    app.lastAutoAt = now;
+    if (!elapsed) return;
 
-    if (app.lowFor > 3.4 && R.quality > 1) {
-      R.quality--;
-      R.setQuality(R.quality);
-      S.px = 4 + (3 - R.quality);
-      document.getElementById('px').value = S.px;
-      document.getElementById('px-out').textContent = S.px + ' px';
+    if (app.fps < 42) { app.lowFor += elapsed; app.highFor = 0; }
+    else if (app.fps > 57) { app.highFor += elapsed; app.lowFor = 0; }
+    else {
+      app.lowFor = Math.max(0, app.lowFor - elapsed * 0.45);
+      app.highFor = Math.max(0, app.highFor - elapsed * 0.25);
+    }
+
+    if (app.lowFor > 2.8 && R.quality > 0) {
+      R.setQuality(R.quality - 1);
+      UI.setScaleLabel(S.pixelArt, R.quality, S.px);
       relayout();
       app.lowFor = 0;
-    } else if (app.highFor > 6 && R.quality < 3) {
-      R.quality++;
-      R.setQuality(R.quality);
-      S.px = 4 + (3 - R.quality);
-      document.getElementById('px').value = S.px;
-      document.getElementById('px-out').textContent = S.px + ' px';
+      app.highFor = 0;
+    } else if (app.highFor > 8 && R.quality < 3) {
+      R.setQuality(R.quality + 1);
+      UI.setScaleLabel(S.pixelArt, R.quality, S.px);
       relayout();
       app.highFor = 0;
+      app.lowFor = 0;
     }
   }
 
@@ -360,6 +476,20 @@
     })());
 
     if (R && R.count) {
+      var cloud = R.cloud;
+      ok('cloud count exact', cloud.count === app.count && R.count === app.count);
+      ok('cloud hash present', /^[0-9A-F]{8}$/.test(cloud.hash || ''));
+      ok('orientation present', !!cloud.ori && cloud.ori.length >= cloud.count);
+      ok('finite bounds', (function () {
+        var k, tail = cloud.count - 1;
+        for (k = 0; k < 64; k++) {
+          var q = (cloud.count * k / 64) | 0;
+          if (!isFinite(cloud.pos[q * 3]) || !isFinite(cloud.pos[q * 3 + 1]) ||
+              !isFinite(cloud.col[q * 3]) || !isFinite(cloud.rad[q])) return false;
+        }
+        return isFinite(cloud.pos[tail * 3 + 2]) && isFinite(cloud.alp[tail]);
+      })());
+
       var ord = R.orderArr, n = R.count, mono = true;
       var p = R.cloud.pos, eye = cam.eye();
       var fx = cam.target[0] - eye[0], fy = cam.target[1] - eye[1], fz = cam.target[2] - eye[2];
