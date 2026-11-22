@@ -96,15 +96,16 @@
     '  vec2 ax = tl > 0.045 ? tilt / tl : vec2(0.88, 0.47);',
     '  vec2 ay = vec2(-ax.y, ax.x);',
     '  float ori = clamp(Dp.z, 0.0, 1.0) * uOrient;',
-    '  float ratio = mix(1.0, clamp(1.0 - tl * 0.62, 0.56, 1.0), ori);',
+    '  float ratio = mix(1.0, clamp(1.0 - tl * 0.52, 0.58, 1.0), ori);',
     '  float minor = px * ratio;',
-    '  float major = px / max(ratio, 0.60);',
+    '  float major = px / max(ratio, 0.62);',
     '',
-    '  // Single-pass scattering DOF. Defocused splats grow slightly and lose',
-    '  // alpha so the result softens without becoming a field of bright discs.',
-    '  float coc = clamp(abs(depth - uFocus) / max(uFocus, 1.0) * uDof, 0.0, 1.0);',
-    '  major *= 1.0 + coc * 1.25;',
-    '  minor *= 1.0 + coc * 0.45;',
+    '  // Focal-band DOF: keep the hero subject sharp within a clean deadzone',
+    '  // around uFocus while softening foreground particles and distant ridges.',
+    '  float focalDist = abs(depth - uFocus);',
+    '  float coc = clamp(smoothstep(uFocus * 0.14, uFocus * 0.85, focalDist) * uDof, 0.0, 1.0);',
+    '  major *= 1.0 + coc * 1.15;',
+    '  minor *= 1.0 + coc * 0.42;',
     '  vec2 offset = (aCorner.x * ax * minor + aCorner.y * ay * major) * (2.0 / uFbo);',
     '  gl_Position.xy += offset * gl_Position.w;',
     '',
@@ -122,7 +123,7 @@
     '',
     '  vUv = aCorner;',
     '  vCol = Bc.rgb;',
-    '  vAlpha = Bc.a * uFade / (1.0 + coc * 1.4);',
+    '  vAlpha = Bc.a * uFade / (1.0 + coc * 1.35);',
     '  vNrm = Cn.xyz;',
     '  vView = normalize(p - uEye);',
     '  vDepth = depth;',
@@ -148,6 +149,8 @@
     'uniform int uSplatView;',
     'uniform int uViewMode;',
     'uniform vec3 uFogColor;',
+    'uniform vec3 uFogScatterCol;',
+    'uniform vec3 uSunDir;',
     'uniform vec3 uRimCol;',
     'uniform float uRim;',
     'out vec4 outColor;',
@@ -158,14 +161,18 @@
     '  if (uSplatView == 1) {',
     '    a = 1.0 - smoothstep(0.72, 1.0, r2);',
     '  } else {',
-    '    a = exp(-4.2 * r2);',
+    '    a = exp(-4.35 * r2);',
     '  }',
     '  a *= vAlpha;',
     '  if (a < 0.010) discard;',
+    '  vec3 n = normalize(vNrm);',
     '  float fog = clamp(vFog, 0.0, 1.0);',
-    '  float rim = pow(1.0 - abs(dot(normalize(vNrm), vView)), 3.0);',
+    '  float sunInscatter = pow(max(dot(vView, uSunDir), 0.0), 4.0);',
+    '  vec3 fogCol = mix(uFogColor, uFogScatterCol, sunInscatter * 0.58);',
+    '  float sunMask = 0.35 + 0.65 * max(dot(n, uSunDir), 0.0);',
+    '  float rim = pow(1.0 - abs(dot(n, vView)), 2.8) * sunMask;',
     '  vec3 col = vCol + uRimCol * rim * uRim;',
-    '  col = mix(col, uFogColor, fog);',
+    '  col = mix(col, fogCol, fog);',
     '  if (uViewMode == 1) col = vNrm * 0.5 + 0.5;',
     '  else if (uViewMode == 2) col = vec3(vAo);',
     '  else if (uViewMode == 3) col = vec3(fract(vDepth * 0.08));',
@@ -193,6 +200,7 @@
     'uniform vec2 uSunPos;',
     'uniform float uSunDisc;',
     'uniform vec3 uFogColor;',
+    'uniform vec3 uFogScatterCol;',
     'uniform vec2 uMoonPos;',
     'uniform vec3 uMoonCol;',
     'uniform vec2 uMoonPar;',
@@ -235,24 +243,22 @@
     '',
     'vec3 skyAt(vec2 uv) {',
     '  float h = uv.y;',
-    '  vec3 s = mix(uSkyHor, uSkyTop, smoothstep(0.32, 1.0, h));',
-    '  s = mix(uSkyBot, s, smoothstep(0.0, 0.34, h));',
+    '  vec3 s = mix(uSkyHor, uSkyTop, smoothstep(0.30, 1.0, h));',
+    '  s = mix(uSkyBot, s, smoothstep(0.0, 0.32, h));',
     '',
-    '  // A slow cloud deck, not a flat gradient. It is anchored to camera yaw so',
-    '  // it does not swim when the diorama is orbited.',
     '  vec2 cp = vec2(((uv.x - 0.5) * (uRes.x / uRes.y) * 2.1 + uSkyYaw), h * 3.1 - uSkyTime * 0.006);',
     '  float deck = fbmS(cp * 3.1 + vec2(2.3, 8.1));',
-    '  float band = smoothstep(0.30, 0.54, h) * (1.0 - smoothstep(0.80, 0.99, h));',
-    '  float cloud = smoothstep(0.47, 0.70, deck) * band;',
-    '  vec3 cloudCol = mix(uFogColor, uSunCol, 0.30);',
-    '  s = mix(s, cloudCol, cloud * 0.18);',
+    '  float band = smoothstep(0.28, 0.54, h) * (1.0 - smoothstep(0.80, 0.99, h));',
+    '  float cloud = smoothstep(0.45, 0.72, deck) * band;',
+    '  vec3 cloudCol = mix(uFogColor, uFogScatterCol, 0.42);',
+    '  s = mix(s, cloudCol, cloud * 0.22);',
     '',
-    '  float horizon = exp(-pow((h - 0.42) * 5.2, 2.0));',
-    '  s += cloudCol * horizon * 0.025;',
+    '  float horizon = exp(-pow((h - 0.40) * 4.8, 2.0));',
+    '  s += uFogScatterCol * horizon * 0.045;',
     '  vec2 d = (uv - uSunPos) * vec2(uRes.x / uRes.y, 1.0);',
     '  float sd = length(d);',
-    '  float g = exp(-sd * sd * 12.0) * 0.16 + exp(-sd * sd * 3.8) * 0.014;',
-    '  float disc = 1.0 - smoothstep(0.055, 0.085, sd);',
+    '  float g = exp(-sd * sd * 11.0) * 0.20 + exp(-sd * sd * 3.2) * 0.025;',
+    '  float disc = 1.0 - smoothstep(0.052, 0.085, sd);',
     '  s += uSunCol * (g + disc * uSunDisc);',
     '  return s;',
     '}',
@@ -261,14 +267,12 @@
     '  vec4 sc = texture(uScene, vUv);',
     '  vec3 sky = skyAt(vUv);',
     '',
-    '  // The moon belongs to the sky. Add it before compositing the scene so',
-    '  // castle walls and branches occlude it instead of being painted over.',
     '  vec2 asp = vec2(uRes.x / uRes.y, 1.0);',
     '  float md = length((vUv - uMoonPos) * asp);',
     '  float disc = 1.0 - smoothstep(uMoonPar.x * 0.92, uMoonPar.x, md);',
     '  vec2 moonP = (vUv - uMoonPos) * asp / max(uMoonPar.x, 0.001);',
     '  float mottle = 0.80 + 0.20 * vnoiseS(moonP * 7.0 + vec2(3.4, 9.1));',
-    '  float ring = exp(-max(0.0, md - uMoonPar.x) * 8.0) * 0.12;',
+    '  float ring = exp(-max(0.0, md - uMoonPar.x) * 7.5) * 0.14;',
     '  sky = mix(sky, uMoonCol * mottle, disc * uMoonPar.y);',
     '  sky += uMoonCol * ring * uMoonPar.y;',
     '',
@@ -280,14 +284,28 @@
     '    return;',
     '  }',
     '',
-    '  // Small five-tap HDR glow in the existing post pass. No extra FBO, no',
-    '  // wide blur chain; thresholding keeps stone from turning milky.',
     '  vec2 tx = 1.0 / uRes;',
-    '  vec3 glow = max(texture(uScene, vUv + vec2(1.6, 0.4) * tx).rgb - vec3(0.52), 0.0)',
-    '            + max(texture(uScene, vUv + vec2(-1.4, 0.9) * tx).rgb - vec3(0.52), 0.0)',
-    '            + max(texture(uScene, vUv + vec2(0.3, -1.7) * tx).rgb - vec3(0.52), 0.0)',
-    '            + max(texture(uScene, vUv + vec2(-2.2, -0.5) * tx).rgb - vec3(0.52), 0.0);',
-    '  glow *= 0.25 * uBloom;',
+    '  // Subtle micro-clarity sharpening on foreground/midground surfaces in cinematic mode',
+    '  if (uPixelArt < 0.5 && cover > 0.25) {',
+    '    vec3 n0 = texture(uScene, vUv + vec2(tx.x, 0.0)).rgb;',
+    '    vec3 n1 = texture(uScene, vUv - vec2(tx.x, 0.0)).rgb;',
+    '    vec3 n2 = texture(uScene, vUv + vec2(0.0, tx.y)).rgb;',
+    '    vec3 n3 = texture(uScene, vUv - vec2(0.0, tx.y)).rgb;',
+    '    vec3 blur = (n0 + n1 + n2 + n3) * 0.25;',
+    '    c += (sc.rgb - blur) * 0.18 * cover;',
+    '    c = max(c, vec3(0.0));',
+    '  }',
+    '',
+    '  // Dual-ring 8-tap HDR bloom thresholded for true emissives',
+    '  vec3 glow = max(texture(uScene, vUv + vec2(1.5, 0.4) * tx).rgb - vec3(0.50), 0.0)',
+    '            + max(texture(uScene, vUv + vec2(-1.4, 0.9) * tx).rgb - vec3(0.50), 0.0)',
+    '            + max(texture(uScene, vUv + vec2(0.4, -1.6) * tx).rgb - vec3(0.50), 0.0)',
+    '            + max(texture(uScene, vUv + vec2(-2.0, -0.5) * tx).rgb - vec3(0.50), 0.0)',
+    '            + 0.65 * max(texture(uScene, vUv + vec2(3.6, 2.2) * tx).rgb - vec3(0.54), 0.0)',
+    '            + 0.65 * max(texture(uScene, vUv + vec2(-3.2, 2.6) * tx).rgb - vec3(0.54), 0.0)',
+    '            + 0.65 * max(texture(uScene, vUv + vec2(2.4, -3.5) * tx).rgb - vec3(0.54), 0.0)',
+    '            + 0.65 * max(texture(uScene, vUv + vec2(-3.8, -2.0) * tx).rgb - vec3(0.54), 0.0);',
+    '  glow *= 0.17 * uBloom;',
     '',
     '  c *= uExposure;',
     '  c += glow;',
@@ -366,20 +384,32 @@
       renderer: (function () {
         var dbg = gl.getExtension('WEBGL_debug_renderer_info');
         return dbg ? gl.getParameter(dbg.UNMASKED_RENDERER_WEBGL) : 'webgl2';
-      })()
+      })(),
+      contextLost: false
     };
+    R.isSoftware = /swiftshader|llvmpipe|software|microsoft basic/i.test(R.renderer);
+
+    canvas.addEventListener('webglcontextlost', function (e) {
+      e.preventDefault();
+      R.contextLost = true;
+      ER.bus.emit('contextlost', true);
+    });
+    canvas.addEventListener('webglcontextrestored', function () {
+      R.contextLost = false;
+      ER.bus.emit('contextrestored', true);
+    });
 
     R.progSplat = program(gl, VS_SPLAT, FS_SPLAT);
     R.progPost = program(gl, VS_POST, FS_POST);
     R.uSplat = uniforms(gl, R.progSplat, [
       'uData', 'uOrder', 'uView', 'uProj', 'uEye', 'uFbo', 'uScale', 'uMaxPx', 'uTime',
-      'uAnimate', 'uFade', 'uSplatView', 'uViewMode', 'uFogColor', 'uFogDensity', 'uFogStart',
-      'uRim', 'uRimCol', 'uFocus', 'uDof', 'uFogHeightBase', 'uFogHeightDensity',
-      'uFogHeightFalloff', 'uFogHeightStrength', 'uOrient'
+      'uAnimate', 'uFade', 'uSplatView', 'uViewMode', 'uFogColor', 'uFogScatterCol', 'uSunDir',
+      'uFogDensity', 'uFogStart', 'uRim', 'uRimCol', 'uFocus', 'uDof',
+      'uFogHeightBase', 'uFogHeightDensity', 'uFogHeightFalloff', 'uFogHeightStrength', 'uOrient'
     ]);
     R.uPost = uniforms(gl, R.progPost, [
-      'uScene', 'uRes', 'uSkyTop', 'uSkyHor', 'uSkyBot', 'uSunCol', 'uSunPos', 'uSunDisc', 'uFogColor',
-      'uMoonPos', 'uMoonCol', 'uMoonPar', 'uSkyYaw', 'uSkyTime',
+      'uScene', 'uRes', 'uSkyTop', 'uSkyHor', 'uSkyBot', 'uSunCol', 'uSunPos', 'uSunDisc',
+      'uFogColor', 'uFogScatterCol', 'uMoonPos', 'uMoonCol', 'uMoonPar', 'uSkyYaw', 'uSkyTime',
       'uExposure', 'uBloom', 'uViewMode', 'uDither', 'uPixelArt', 'uVignette', 'uPal'
     ]);
 
@@ -462,7 +492,9 @@
       R.skyHor = C.hexLin(scene.sky.horizon);
       R.skyBot = C.hexLin(scene.sky.bottom);
       R.sunCol = C.hexLin(scene.lightCol || '#ffffff');
+      R.sunDir = scene.light || [0, 1, 0];
       R.fog = C.hexLin(scene.fog.color);
+      R.fogScatter = C.hexLin(scene.fog.scatterColor || scene.fog.color);
       R.exposure = scene.exposure === undefined ? 1.25 : scene.exposure;
       // Palette values are display-space sRGB: quantisation happens after
       // tone mapping and gamma, never in the linear scene buffer.
@@ -565,6 +597,7 @@
     };
 
     R.draw = function (cam, time, aspect) {
+      if (R.contextLost || !R.count || !R.scene) return;
       var gl2 = gl;
       // --- splat pass
       gl2.bindFramebuffer(gl2.FRAMEBUFFER, R.fbo);
@@ -598,10 +631,12 @@
       gl2.uniform1i(R.uSplat.uSplatView, R.opts.splatView);
       gl2.uniform1i(R.uSplat.uViewMode, R.opts.viewMode || 0);
       gl2.uniform3fv(R.uSplat.uFogColor, R.fog);
+      gl2.uniform3fv(R.uSplat.uFogScatterCol, R.fogScatter);
+      gl2.uniform3fv(R.uSplat.uSunDir, R.sunDir);
       gl2.uniform1f(R.uSplat.uFogDensity, R.scene.fog.density);
       gl2.uniform1f(R.uSplat.uFogStart, R.scene.fog.start);
       gl2.uniform3fv(R.uSplat.uRimCol, R.sunCol);
-      gl2.uniform1f(R.uSplat.uRim, 0.10);
+      gl2.uniform1f(R.uSplat.uRim, 0.14);
       gl2.uniform1f(R.uSplat.uFocus, Math.hypot(
         cam.target[0] - cam.eye()[0],
         cam.target[1] - cam.eye()[1],
@@ -633,6 +668,7 @@
       gl2.uniform2f(R.uPost.uSunPos, R.sunPos[0], R.sunPos[1]);
       gl2.uniform1f(R.uPost.uSunDisc, R.sunDisc);
       gl2.uniform3fv(R.uPost.uFogColor, R.fog);
+      gl2.uniform3fv(R.uPost.uFogScatterCol, R.fogScatter);
       gl2.uniform2f(R.uPost.uMoonPos, R.moonPos[0], R.moonPos[1]);
       gl2.uniform3fv(R.uPost.uMoonCol, R.moonCol);
       gl2.uniform2f(R.uPost.uMoonPar, R.moonPar[0], R.moonPar[1]);
@@ -643,7 +679,7 @@
       gl2.uniform1i(R.uPost.uViewMode, R.opts.viewMode || 0);
       gl2.uniform1f(R.uPost.uDither, R.opts.dither);
       gl2.uniform1f(R.uPost.uPixelArt, R.opts.pixelArt);
-      gl2.uniform1f(R.uPost.uVignette, R.opts.pixelArt > 0.5 ? 0.18 : 0.10);
+      gl2.uniform1f(R.uPost.uVignette, R.opts.pixelArt > 0.5 ? 0.18 : 0.11);
       gl2.uniform3fv(R.uPost.uPal, R.palette);
 
       gl2.drawArrays(gl2.TRIANGLE_STRIP, 0, 4);
@@ -668,10 +704,10 @@
     };
 
     var QUALITY = [
-      { w: 640, h: 360, maxPx: 18, dof: 0.00, bloom: 0.00 },
-      { w: 800, h: 450, maxPx: 24, dof: 0.75, bloom: 0.00 },
-      { w: 1024, h: 576, maxPx: 30, dof: 1.15, bloom: 0.08 },
-      { w: 1280, h: 720, maxPx: 38, dof: 1.60, bloom: 0.13 }
+      { w: 640, h: 360, maxPx: 20, dof: 0.00, bloom: 0.00 },
+      { w: 960, h: 540, maxPx: 26, dof: 0.70, bloom: 0.05 },
+      { w: 1280, h: 720, maxPx: 34, dof: 1.15, bloom: 0.10 },
+      { w: 1600, h: 900, maxPx: 42, dof: 1.50, bloom: 0.14 }
     ];
 
     R.qualitySpec = function (q) {

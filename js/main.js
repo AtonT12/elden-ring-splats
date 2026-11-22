@@ -19,9 +19,10 @@
   var Q = {
     realm: qp.get('realm'),
     seed: qp.get('seed'),
-    count: qInt('count', null, 20000, 90000),
+    count: qInt('count', null, 25000, 120000),
     px: qInt('px', null, 2, 8),
     freeze: qp.get('freeze') === '1',
+    autostart: qp.get('autostart') === '1',
     quality: qInt('quality', null, 0, 3),
     view: qp.get('view') || 'normal',
     sort: qp.get('sort') !== 'off',
@@ -42,10 +43,10 @@
 
   var app = {
     state: 'boot', realm: 'erdtree', seed: 'aster',
-    count: 60000, time: 0, paused: false,
+    count: 75000, time: 0, paused: false,
     fps: 0, frameMs: 16.7, genMs: 0, sortMs: 0,
     dirtySort: true, lastStats: 0, lastAutoAt: 0, autoQuality: true, lowFor: 0, highFor: 0,
-    needsDraw: true, countTimer: 0,
+    needsDraw: true, countTimer: 0, lastSoftDraw: 0,
     cache: {}, cacheOrder: []
   };
 
@@ -78,11 +79,17 @@
       return;
     }
 
-    var initialQuality = Q.quality === null
-      ? (window.innerWidth >= 1280 ? 3 : 2)
-      : Q.quality;
+    var initialQuality;
+    if (Q.quality !== null) {
+      initialQuality = Q.quality;
+      app.autoQuality = false;
+    } else if (R.isSoftware) {
+      initialQuality = 0;
+      app.autoQuality = false;
+    } else {
+      initialQuality = window.innerWidth >= 1100 ? 3 : 2;
+    }
     R.setQuality(initialQuality);
-    if (Q.quality !== null) app.autoQuality = false;
     R.opts.viewMode = Q.view === 'normals' ? 1 : Q.view === 'ao' ? 2 : Q.view === 'depth' ? 3 : 0;
     var startPixel = qp.get('pa') === '1';
     var startDitherAmount = qNum('dith', 0.6, 0, 1);
@@ -122,14 +129,17 @@
     ER.ui.showLoading('KINDLING THE ERDTREE', 'reading the golden order');
     ER.ui.progress(0.02, 'reading the golden order', scene.sub);
 
-    staged(build(app.realm, app.seed, app.count, true), scene, Q.freeze ? 260 : 1500, function () {
+    var fastBoot = Q.freeze || Q.autostart;
+    staged(build(app.realm, app.seed, app.count, true), scene, fastBoot ? 180 : 1500, function () {
       app.state = 'ready';
       setTimeout(function () {
         ER.ui.hideLoading();
         document.body.classList.add('ready');
+        document.body.setAttribute('data-state', 'ready');
+        document.body.setAttribute('data-realm', app.realm);
         lastT = C.now();
-        requestAnimationFrame(loop);
-      }, Q.freeze ? 60 : 420);
+        wakeLoop();
+      }, fastBoot ? 40 : 420);
     });
 
     if (Q.debug) {
@@ -140,12 +150,12 @@
     ER.bus.on('realm', function (id) { switchRealm(id); });
     ER.bus.on('seed', function (v) { app.seed = v; rebuild(); });
     ER.bus.on('param', function (p) {
-      if (p.key === 'size') { R.splatScale = p.value; app.dirtySort = true; app.needsDraw = true; }
+      if (p.key === 'size') { R.splatScale = p.value; app.dirtySort = true; app.needsDraw = true; wakeLoop(); }
       else if (p.key === 'px') { S.px = p.value; app.autoQuality = false; queueRelayout(); }
       else if (p.key === 'ditherAmount') {
         S.ditherAmount = p.value;
         R.opts.dither = (S.ditherOn && S.pixelArt) ? p.value : 0;
-        app.needsDraw = true;
+        app.needsDraw = true; wakeLoop();
       } else if (p.key === 'count') {
         S.count = p.value;
         app.count = p.value;
@@ -164,22 +174,36 @@
         app.needsDraw = true;
         queueRelayout();
       } else if (t.key === 'splatView') {
-        R.opts.splatView = t.value ? 1 : 0; app.needsDraw = true;
+        R.opts.splatView = t.value ? 1 : 0; app.needsDraw = true; wakeLoop();
       } else if (t.key === 'animate') {
-        R.opts.animate = t.value ? 1 : 0; app.needsDraw = true;
+        R.opts.animate = t.value ? 1 : 0; app.needsDraw = true; wakeLoop();
       } else if (t.key === 'autoOrbit') {
-        cam.auto = t.value; app.needsDraw = true;
+        cam.auto = t.value; app.needsDraw = true; wakeLoop();
       } else if (t.key === 'ditherOn') {
         S.ditherOn = t.value;
         R.opts.dither = (t.value && S.pixelArt) ? S.ditherAmount : 0;
-        app.needsDraw = true;
+        app.needsDraw = true; wakeLoop();
       }
     });
     ER.bus.on('action', function (a) {
       if (a === 'reset') {
         cam.reset(ER.sdf.scenes[app.realm].camera, 650);
-        app.dirtySort = true; app.needsDraw = true;
+        app.dirtySort = true; app.needsDraw = true; wakeLoop();
       } else if (a === 'relayout') queueRelayout();
+    });
+    ER.bus.on('contextlost', function () {
+      UI.showContextLost(true);
+    });
+    ER.bus.on('contextrestored', function () {
+      UI.showContextLost(false);
+      if (R && R.cloud) {
+        R.applySky(ER.sdf.scenes[app.realm]);
+        R.upload(R.cloud);
+        relayout();
+      }
+      app.dirtySort = true;
+      app.needsDraw = true;
+      wakeLoop();
     });
   }
 
@@ -253,22 +277,30 @@
     UI.compact(true);
     UI.progress(0.03, 'unbinding the old ground', scene.sub);
 
-    cam.reset(scene.camera, 700);
+    var fastSwitch = Q.freeze || Q.autostart;
+    if (!R.isSoftware && !fastSwitch) cam.reset(scene.camera, 700);
     R.opts.fade = 0.25;
 
-    staged(build(id, app.seed, app.count, true), scene, 1100, function () {
-      var t0 = C.now();
-      (function fadeIn() {
-        var k = Math.min(1, (C.now() - t0) / 160);
-        R.opts.fade = 0.25 + 0.75 * k;
-        if (k < 1) requestAnimationFrame(fadeIn);
-      })();
+    staged(build(id, app.seed, app.count, true), scene, fastSwitch ? 260 : 1100, function () {
+      if (R.isSoftware || fastSwitch) {
+        cam.snap(scene.camera);
+        R.opts.fade = 1;
+      } else {
+        var t0 = C.now();
+        (function fadeIn() {
+          var k = Math.min(1, (C.now() - t0) / 160);
+          R.opts.fade = 0.25 + 0.75 * k;
+          if (k < 1) requestAnimationFrame(fadeIn);
+        })();
+      }
       app.state = 'ready';
       app.dirtySort = true;
+      app.needsDraw = true;
+      wakeLoop();
       setTimeout(function () {
         ER.ui.hideLoading();
         ER.ui.compact(false);
-      }, 2600);
+      }, fastSwitch ? 500 : 2600);
     });
   }
 
@@ -297,6 +329,7 @@
     UI.stats({ res: L.iw + '\u00d7' + L.ih });
     app.dirtySort = true;
     app.needsDraw = true;
+    wakeLoop();
   }
 
   function queueRelayout() {
@@ -327,6 +360,7 @@
       else cam.drag(dx, dy);
       app.dirtySort = true;
       app.needsDraw = true;
+      wakeLoop();
     });
     function up(e) {
       if (!dragging) return;
@@ -334,6 +368,7 @@
       canvas.style.cursor = 'grab';
       app.dirtySort = true;
       app.needsDraw = true;
+      wakeLoop();
       try { canvas.releasePointerCapture(e.pointerId); } catch (err) { }
     }
     canvas.addEventListener('pointerup', up);
@@ -344,6 +379,7 @@
       cam.wheel(e.deltaY);
       app.dirtySort = true;
       app.needsDraw = true;
+      wakeLoop();
     }, { passive: false });
 
     canvas.addEventListener('dblclick', function () {
@@ -365,16 +401,43 @@
         app.paused = !app.paused;
         cam.paused = app.paused;
         app.needsDraw = true;
+        wakeLoop();
       }
     });
   }
 
   /* ---------------- loop ---------------- */
+  var rafId = 0, softTimer = 0;
+  function scheduleLoop(delayMs) {
+    if (rafId || softTimer) return;
+    if (delayMs > 0) {
+      softTimer = setTimeout(function () {
+        softTimer = 0;
+        rafId = requestAnimationFrame(loop);
+      }, delayMs);
+    } else {
+      rafId = requestAnimationFrame(loop);
+    }
+  }
+  function wakeLoop() {
+    if (app.state !== 'ready') return;
+    if (softTimer) {
+      clearTimeout(softTimer);
+      softTimer = 0;
+    }
+    if (!rafId) rafId = requestAnimationFrame(loop);
+  }
+
   function loop(t) {
-    requestAnimationFrame(loop);
+    rafId = 0;
+    if (app.state !== 'ready' || !R.count || !R.scene) return;
     var now = C.now();
-    if (document.hidden) { lastT = now; return; }
-    var dt = Math.min(0.05, (now - lastT) / 1000);
+    if (document.hidden) {
+      lastT = now;
+      scheduleLoop(R.isSoftware ? 320 : 0);
+      return;
+    }
+    var dt = Math.min(R.isSoftware ? 0.35 : 0.05, (now - lastT) / 1000);
     lastT = now;
 
     var animating = !app.paused && R.opts.animate > 0.5;
@@ -393,11 +456,15 @@
       }
     }
 
-    if (animating || moved || app.dirtySort || justResized || !app.paused || app.forceDraw) {
+    var wantDraw = animating || moved || app.dirtySort || justResized || !app.paused || app.forceDraw;
+    var tDraw0 = C.now();
+    if (wantDraw) {
       R.draw(cam, app.time, R.w / R.h);
+      app.lastSoftDraw = now;
       app.needsDraw = false;
       app.forceDraw = false;
     }
+    var drawCpuMs = C.now() - tDraw0;
 
     ER.app.renderer = R;
 
@@ -408,7 +475,8 @@
 
     // Ignore the first long frame after a tab switch or build pause.
     if (dt < 0.5) {
-      app.frameMs = app.frameMs * 0.9 + (dt * 1000) * 0.1;
+      var measuredMs = R.isSoftware ? Math.max(16.7, drawCpuMs + R.sortMs) : dt * 1000;
+      app.frameMs = app.frameMs * 0.9 + measuredMs * 0.1;
       app.fps = 1000 / Math.max(0.1, app.frameMs);
     }
 
@@ -420,6 +488,15 @@
       });
       autoQuality(now);
     }
+
+    if (R.isSoftware) {
+      var active = !!cam.tween || Math.abs(cam.vYaw) > 1e-4 || Math.abs(cam.vPitch) > 1e-4 ||
+                   Math.abs(cam.tDist - cam.dist) > 1e-2 || app.dirtySort || app.needsDraw;
+      if (active) scheduleLoop(110);
+      else if (!app.paused && (animating || cam.auto)) scheduleLoop(420);
+    } else {
+      scheduleLoop(0);
+    }
   }
 
   function autoQuality(now) {
@@ -428,20 +505,20 @@
     app.lastAutoAt = now;
     if (!elapsed) return;
 
-    if (app.fps < 42) { app.lowFor += elapsed; app.highFor = 0; }
-    else if (app.fps > 57) { app.highFor += elapsed; app.lowFor = 0; }
+    if (app.fps < 34) { app.lowFor += elapsed; app.highFor = 0; }
+    else if (app.fps > 56) { app.highFor += elapsed; app.lowFor = 0; }
     else {
       app.lowFor = Math.max(0, app.lowFor - elapsed * 0.45);
       app.highFor = Math.max(0, app.highFor - elapsed * 0.25);
     }
 
-    if (app.lowFor > 2.8 && R.quality > 0) {
+    if (app.lowFor > 3.0 && R.quality > 0) {
       R.setQuality(R.quality - 1);
       UI.setScaleLabel(S.pixelArt, R.quality, S.px);
       relayout();
       app.lowFor = 0;
       app.highFor = 0;
-    } else if (app.highFor > 8 && R.quality < 3) {
+    } else if (app.highFor > 6.0 && R.quality < 3) {
       R.setQuality(R.quality + 1);
       UI.setScaleLabel(S.pixelArt, R.quality, S.px);
       relayout();

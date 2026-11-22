@@ -74,6 +74,16 @@
     return sum / norm;
   }
 
+  /* stepped sedimentary cliff terracing */
+  function terrace(v, steps, sharpness) {
+    var s = v * steps;
+    var i = Math.floor(s);
+    var f = s - i;
+    var k = sharpness === undefined ? 0.35 : sharpness;
+    var t = smooth(clamp((f - (1 - k)) / k, 0, 1));
+    return (i + t) / steps;
+  }
+
   /* ---------- mat4 (column-major, gl-matrix layout) ---------- */
   var mat4 = {
     create: function () {
@@ -176,7 +186,7 @@
   ER.core = {
     clamp: clamp, lerp: lerp, smooth: smooth, TAU: TAU,
     fnv1a: fnv1a, mulberry32: mulberry32, ihash: ihash,
-    noise2: noise2, snoise2: snoise2, fbm2: fbm2, ridged2: ridged2,
+    noise2: noise2, snoise2: snoise2, fbm2: fbm2, ridged2: ridged2, terrace: terrace,
     mat4: mat4, vec3: vec3, bus: bus, now: now,
     hexToRgb: hexToRgb, hexLin: hexLin, srgb: srgb
   };

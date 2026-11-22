@@ -228,7 +228,7 @@
       return made;
     },
 
-    /* vertical band — the cliff skirt of a floating island */
+    /* vertical band — the cliff skirt of a floating island with stepped strata */
     skirt: function (rng, n, R, topFn, yBot, push, o) {
       o = o || {};
       var mat = o.mat || 'CLIFF';
@@ -236,37 +236,40 @@
       var i, th, t, rr, y;
       for (i = 0; i < n; i++) {
         th = rng() * TAU;
-        t = Math.pow(rng(), 0.55);
+        t = Math.pow(rng(), 0.52);
         var re = edge ? R * edge(th) : R;
         var top = topFn(Math.cos(th) * re, Math.sin(th) * re);
         y = C.lerp(yBot, top, t);
-        // bulge the profile outward as it descends
-        rr = re * (1 - 0.16 * (1 - t) + 0.035 * Math.sin(th * 9 + y));
+        // Stepped sedimentary ledges + tapered overhang profile
+        var rawDrop = 1 - t;
+        var ledge = C.terrace(t, 5, 0.28);
+        rr = re * (1 - 0.14 * rawDrop - 0.04 * (1 - ledge) + 0.03 * Math.sin(th * 7 + y * 0.8));
         var nx = Math.cos(th), nz = Math.sin(th);
-        // Sedimentary shelves and cracks, driven by world height and angle so
-        // they stay put while the camera moves.
-        var shelf = 0.045 * Math.sin(y * 3.3 + th * 2.0)
-                  + 0.025 * C.snoise2(y * 1.8, th * 4.0, 71);
+        var shelf = 0.09 * Math.sin(y * 3.8 + th * 1.5)
+                  + 0.055 * C.snoise2(y * 1.9, th * 4.5, 71)
+                  - 0.06 * Math.pow(Math.max(0, Math.sin(th * 11 + C.snoise2(th * 2.0, y * 0.6, 19) * 2.2)), 4);
         rr += shelf;
+        var ny = 0.22 * rawDrop - 0.14 + 0.16 * Math.cos(y * 3.8 + th * 1.5);
+        var nl = 1 / (Math.hypot(nx, ny, nz) || 1);
         var smat = o.matFn ? o.matFn(y, th, t) : mat;
-        push(nx * rr, y, nz * rr, nx, 0.25 * (1 - t) - 0.1, nz, smat);
+        push(nx * rr, y, nz * rr, nx * nl, ny * nl, nz * nl, smat);
       }
     },
 
-    /* distant mountain bands: cheap, broad points that the height fog layers
-       behind the hero island. Kept as splats so the piece stays image-free. */
+    /* distant mountain bands: layered jagged silhouettes that blend into height fog */
     farRidge: function (rng, n, R0, baseY, height, spread, seed, push, o) {
       o = o || {};
       var mat = o.mat || 'FAR';
       for (var i = 0; i < n; i++) {
         var a = rng() * TAU;
         var ca = Math.cos(a), sa = Math.sin(a);
-        var crest = 0.16 + 0.84 * C.ridged2(ca * 1.55 + 4.1, sa * 1.55 - 2.7, seed, 4);
+        var crest = 0.14 + 0.86 * C.ridged2(ca * 1.85 + 4.1, sa * 1.85 - 2.7, seed, 4);
+        var spire = Math.pow(Math.max(0, C.ridged2(ca * 4.2 - 1.3, sa * 4.2 + 2.9, seed + 93, 2)), 3) * 0.45;
         var r = R0 + (rng() - 0.5) * spread;
-        crest *= 0.78 + 0.32 * C.noise2(ca * 3.4 + r * 0.05, sa * 3.4, seed + 41);
-        var t = Math.pow(rng(), 0.72);
+        crest = (crest + spire) * (0.76 + 0.34 * C.noise2(ca * 3.6 + r * 0.05, sa * 3.6, seed + 41));
+        var t = Math.pow(rng(), 0.45);
         var y = baseY + height * crest * t;
-        var nx = ca, nz = sa, ny = 0.18;
+        var nx = ca, nz = sa, ny = 0.22;
         var l = 1 / Math.hypot(nx, ny, nz);
         push(ca * r, y, sa * r, nx * l, ny * l, nz * l, mat);
       }
@@ -349,8 +352,10 @@
       var cut = Math.pow(C.clamp(g1, 0, 1), 7) + 0.55 * Math.pow(C.clamp(g2, 0, 1), 9);
       h -= 0.42 * cut * C.smooth(C.clamp((r - 2.8) / 4.5, 0, 1));
 
-      // Worn shelves of the old capital: shallow, irregular, not concentric.
-      h += 0.07 * Math.sin(r * 2.2 + ca * 1.4) * (1 - rim)
+      // Stepped Leyndell plateau shelves & worn limestone terraces
+      var shelfNorm = C.clamp((h + 1.2) / 4.2, 0, 1);
+      h = C.lerp(h, C.terrace(shelfNorm, 6, 0.32) * 4.2 - 1.2, 0.22 * (1 - rim * 0.4));
+      h += 0.06 * Math.sin(r * 2.2 + ca * 1.4) * (1 - rim)
          + 0.025 * C.snoise2(wx * 0.9, wz * 0.9, 57);
       return h;
     };
@@ -358,15 +363,17 @@
     var terrainMat = function (x, y, z, nx, ny, nz) {
       var slope = 1 - ny;
       var grain = C.noise2(x * 0.52 + 1.3, z * 0.52 - 2.1, 301);
-      if (slope > 0.48 || grain > 0.84) return 'STONE_DK';
-      if (slope > 0.31 || grain < 0.16) return 'CLIFF';
+      if (slope > 0.44 || grain > 0.83) return 'STONE_DK';
+      if (slope > 0.28 || grain < 0.18) return 'CLIFF';
+      if (y > 2.0 && grain > 0.62) return 'STONE';
       return 'GROUND';
     };
 
     var cliffMat = function (y, th, t) {
-      var band = 0.5 + 0.5 * Math.sin(y * 2.8 + th * 3.1);
-      var seam = C.noise2(th * 9.0, y * 2.2, 63);
-      if (band > 0.74 && seam > 0.42) return 'STONE_DK';
+      var band = 0.5 + 0.5 * Math.sin(y * 3.4 + th * 2.6);
+      var seam = C.noise2(th * 9.0, y * 2.4, 63);
+      if (band > 0.70 && seam > 0.38) return 'STONE_DK';
+      if (band < 0.24) return 'STONE';
       return 'CLIFF';
     };
 
@@ -400,98 +407,111 @@
     return {
       id: 'erdtree', label: 'ERDTREE', sub: 'THE GILDED BOUGH',
       epigraph: 'the bough remembers every age it outlived.',
-      sky: { top: '#06060d', horizon: '#392a3c', bottom: '#0b0911' },
-      fog: { color: '#58475a', density: 0.008, start: 16,
-             height: { base: 0, density: 0.005, falloff: 0.22, strength: 0.45 } },
-      exposure: 1.12,
-      light: (function () { var v = [-0.38, 0.80, 0.46], l = Math.hypot(v[0], v[1], v[2]); return [v[0] / l, v[1] / l, v[2] / l]; })(),
-      lightCol: '#ffe2ac',
+      sky: { top: '#05050c', horizon: '#4a3338', bottom: '#0a0810' },
+      fog: { color: '#564252', scatterColor: '#d9a45c', density: 0.0085, start: 15,
+             height: { base: -0.6, density: 0.006, falloff: 0.22, strength: 0.52 } },
+      exposure: 1.14,
+      light: (function () { var v = [-0.42, 0.78, 0.46], l = Math.hypot(v[0], v[1], v[2]); return [v[0] / l, v[1] / l, v[2] / l]; })(),
+      lightCol: '#ffe4aa',
       sunUv: [0.46, 0.62],
-      sunDisc: 0.16,
-      ambient: '#706064',
+      sunDisc: 0.18,
+      ambient: '#6a5d72',
       camera: { yaw: -0.60, pitch: 0.22, dist: 33, target: [0, 6.4, 0] },
       palette: ['#07060d', '#100c17', '#1b1424', '#2a1d2c', '#3b2a33', '#523c33',
                 '#6d5136', '#8b683c', '#a8813f', '#c49a4c', '#dcb262', '#f0cb80',
                 '#ffe0a4', '#fff2ce', '#6a5c78', '#9c8a6a'],
       mats: {
-        GROUND: { color: '#725f43', r: 0.165, a: 0.96, vary: 1, nJit: 0.55 },
-        CLIFF: { color: '#59453e', r: 0.185, a: 0.95, vary: 1, nJit: 0.35 },
-        BARK: { color: '#c2ad86', r: 0.135, a: 0.95, nJit: 0.85 },
-        BARK_DK: { color: '#7c6749', r: 0.11, a: 0.9, nJit: 0.8 },
-        STONE: { color: '#c9bda3', r: 0.135, a: 0.96, vary: 1, nJit: 0.3 },
-        STONE_DK: { color: '#9b8b70', r: 0.135, a: 0.96, nJit: 0.25 },
-        GOLD: { color: '#ffd47c', r: 0.08, a: 0.7, glow: 1.25 },
-        CANOPY: { color: '#ffc965', r: 0.145, a: 0.24, glow: 1.12 },
-        LEAF: { color: '#ffe9a8', r: 0.052, a: 0.46, glow: 1.08 },
-        MOTE: { color: '#fff1c6', r: 0.044, a: 0.38, glow: 1.45 },
-        CLOTH: { color: '#8d3330', r: 0.075, a: 0.9 },
-        BANNER: { color: '#7e2b2a', r: 0.07, a: 0.9 },
-        WINDOW: { color: '#ffdb9e', r: 0.055, a: 0.55, glow: 1.5 },
-        FAR: { color: '#574656', r: 0.52, a: 0.34, noAO: true }
+        GROUND: { color: '#705c40', r: 0.165, a: 0.98, vary: 1, strata: 0.45, nJit: 0.52 },
+        CLIFF: { color: '#53403a', r: 0.165, a: 0.98, vary: 1, strata: 0.85, nJit: 0.42 },
+        BARK: { color: '#c8b084', r: 0.140, a: 0.97, bark: 0.9, nJit: 0.82 },
+        BARK_DK: { color: '#725d40', r: 0.115, a: 0.94, bark: 0.7, nJit: 0.78 },
+        STONE: { color: '#cfc2a6', r: 0.148, a: 0.98, vary: 1, strata: 0.5, nJit: 0.28 },
+        STONE_DK: { color: '#948369', r: 0.150, a: 0.98, strata: 0.65, nJit: 0.30 },
+        GOLD: { color: '#ffd67d', r: 0.075, a: 0.74, glow: 1.35 },
+        CANOPY: { color: '#ffc860', r: 0.138, a: 0.25, glow: 1.16 },
+        LEAF: { color: '#ffeba8', r: 0.048, a: 0.48, glow: 1.12 },
+        MOTE: { color: '#fff2c8', r: 0.040, a: 0.36, glow: 1.50 },
+        MIST: { color: '#cba67c', r: 2.3, a: 0.028, noAO: true },
+        CLOTH: { color: '#8f322f', r: 0.075, a: 0.94 },
+        BANNER: { color: '#7e2b2a', r: 0.075, a: 0.94 },
+        WINDOW: { color: '#ffdc9c', r: 0.052, a: 0.62, glow: 1.65 },
+        FAR: { color: '#5c4756', r: 0.92, a: 0.48, noAO: true },
+        FAR_DEEP: { color: '#3f3040', r: 1.25, a: 0.36, noAO: true }
       },
       emit: [
-        { name: 'ground', weight: 24, shadow: true, fn: function (b, n, rng) {
+        { name: 'ground', weight: 22, shadow: true, fn: function (b, n, rng) {
             gen.heightfield(rng, n, 12.4, ground, b.push,
               { mat: 'GROUND', edge: edge, matFn: terrainMat });
           } },
-        { name: 'skirt', weight: 5, fn: function (b, n, rng) {
-            var q = alloc([1, 0.4, 0.34], n);
-            gen.skirt(rng, q[0], 12.4, ground, -3.4, b.push,
+        { name: 'skirt', weight: 6, fn: function (b, n, rng) {
+            gen.skirt(rng, n, 12.4, ground, -3.7, b.push,
               { mat: 'CLIFF', edge: edge, matFn: cliffMat });
-            // loose rock hanging under the island
-            gen.ellipsoid(rng, q[1], 3.2, -3.0, 5.4, 2.0, 1.1, 1.8, b.push, { mat: 'CLIFF', inflate: 0.9, jit: 0.5 });
-            gen.ellipsoid(rng, q[2], -5.4, -3.6, -3.0, 1.7, 0.9, 1.6, b.push, { mat: 'CLIFF', inflate: 0.9, jit: 0.5 });
           } },
-        { name: 'roots', weight: 4, fn: function (b, n, rng) {
-            var k = 7;
+        { name: 'roots', weight: 5, fn: function (b, n, rng) {
+            var k = 9;
             var q = alloc(new Array(k).fill(1), n);
             for (var i = 0; i < k; i++) {
-              var a = (i / k) * TAU + 0.35 + rng() * 0.15;
-              var len = 3.4 + rng() * 1.7;
-              var x0 = Math.cos(a) * 2.8, z0 = Math.sin(a) * 2.8;
+              var a = (i / k) * TAU + 0.35 + rng() * 0.14;
+              var len = 3.5 + rng() * 2.0;
+              var x0 = Math.cos(a) * 2.7, z0 = Math.sin(a) * 2.7;
+              var mx = Math.cos(a + 0.08) * (len * 0.58), mz = Math.sin(a + 0.08) * (len * 0.58);
               var x1 = Math.cos(a) * len, z1 = Math.sin(a) * len;
-              var y1 = ground(x1, z1) - 0.15;
-              gen.capsule(rng, q[i], x0, 3.0 + rng() * 0.6, z0, x1, y1, z1,
-                1.35, 0.30, b.push, { mat: 'BARK' });
+              var y1 = ground(x1, z1) - 0.18;
+              var ym = ground(mx, mz) + 0.95;
+              var hq = Math.round(q[i] * 0.56);
+              gen.capsule(rng, hq, x0, 3.2 + rng() * 0.6, z0, mx, ym, mz, 1.35, 0.72, b.push, { mat: 'BARK' });
+              gen.capsule(rng, q[i] - hq, mx, ym, mz, x1, y1, z1, 0.72, 0.24, b.push, { mat: 'BARK' });
             }
           } },
         { name: 'trunk', weight: 13, fn: function (b, n, rng) {
-            var segs = 8;
+            var segs = 9;
             var sizes = [];
             for (var s0 = 0; s0 < segs; s0++) sizes.push(1);
-            sizes.push(0.7);                       // bark scars
+            sizes.push(0.65);                      // bark scars
+            sizes.push(0.35);                      // inner golden sap seams
             var q = alloc(sizes, n);
             for (var i = 0; i < segs; i++) {
               var t0 = i / segs, t1 = (i + 1) / segs;
-              var y0 = 0.4 + t0 * 12.4, y1 = 0.4 + t1 * 12.4;
-              var r0 = C.lerp(4.30, 1.30, Math.pow(t0, 0.60));
-              var r1 = C.lerp(4.30, 1.30, Math.pow(t1, 0.60));
+              var y0 = 0.4 + t0 * 12.6, y1 = 0.4 + t1 * 12.6;
+              var r0 = C.lerp(4.35, 1.28, Math.pow(t0, 0.60));
+              var r1 = C.lerp(4.35, 1.28, Math.pow(t1, 0.60));
               gen.capsule(rng, q[i], trunkX(y0), y0, trunkZ(y0), trunkX(y1), y1, trunkZ(y1),
                 r0, r1, b.push, { mat: 'BARK' });
             }
-            // bark scars: thin vertical seams of darker wood
-            var scars = 7, sq = alloc(new Array(scars).fill(1), q[segs]);
+            // bark scars: vertical dark fissures
+            var scars = 8, sq = alloc(new Array(scars).fill(1), q[segs]);
             for (var s = 0; s < scars; s++) {
-              var ang = rng() * TAU;
+              var ang = (s / scars) * TAU + rng() * 0.35;
               for (var j = 0; j < sq[s]; j++) {
-                var yy = 1.2 + rng() * 9.6;
-                var rr = C.lerp(4.30, 1.30, Math.pow(yy / 13, 0.60)) * 1.004;
+                var yy = 1.1 + rng() * 9.8;
+                var rr = C.lerp(4.35, 1.28, Math.pow(yy / 13, 0.60)) * 1.005;
                 b.push(trunkX(yy) + Math.cos(ang) * rr, yy, trunkZ(yy) + Math.sin(ang) * rr,
                   Math.cos(ang), 0.1, Math.sin(ang), 'BARK_DK');
+              }
+            }
+            // luminous golden sap veins along the trunk
+            var veins = 5, vq = alloc(new Array(veins).fill(1), q[segs + 1]);
+            for (var v = 0; v < veins; v++) {
+              var vang = (v / veins) * TAU + 0.42;
+              for (var vj = 0; vj < vq[v]; vj++) {
+                var vy = 1.4 + rng() * 9.2;
+                var vr = C.lerp(4.35, 1.28, Math.pow(vy / 13, 0.60)) * 1.012;
+                b.push(trunkX(vy) + Math.cos(vang) * vr, vy, trunkZ(vy) + Math.sin(vang) * vr,
+                  Math.cos(vang), 0.1, Math.sin(vang), 'GOLD', 0.85, 0.85);
               }
             }
           } },
         { name: 'boughs', weight: 11, fn: function (b, n, rng) {
             var segs = [], tipsArr = [];
             var levels = [
-              { y: 11.4, n: 4, len: 2.9, rad: 0.54 },
-              { y: 10.0, n: 4, len: 3.2, rad: 0.60 },
-              { y: 8.6, n: 3, len: 2.8, rad: 0.66 }
+              { y: 11.6, n: 4, len: 3.0, rad: 0.56 },
+              { y: 10.1, n: 5, len: 3.3, rad: 0.60 },
+              { y: 8.6, n: 3, len: 2.9, rad: 0.68 }
             ];
             for (var li = 0; li < levels.length; li++) {
               var lv = levels[li];
               for (var i = 0; i < lv.n; i++) {
-                var a = (i / lv.n) * TAU + li * 0.53 + rng() * 0.3;
+                var a = (i / lv.n) * TAU + li * 0.53 + rng() * 0.28;
                 var dx = Math.cos(a) * (0.62 + rng() * 0.3), dz = Math.sin(a) * (0.62 + rng() * 0.3);
                 var l = 1 / Math.hypot(dx, 1.15, dz);
                 collect(rng, trunkX(lv.y), lv.y, trunkZ(lv.y),
@@ -509,37 +529,38 @@
             }
             b._tips = tipsArr;
           } },
-        { name: 'canopy', weight: 18, fn: function (b, n, rng) {
+        { name: 'canopy', weight: 17, fn: function (b, n, rng) {
             var t = b._tips || [];
             var count = Math.max(1, t.length / 4);
             var q = alloc(new Array(count).fill(1), n);
             for (var i = 0; i < count; i++) {
               var x = t[i * 4], y = t[i * 4 + 1], z = t[i * 4 + 2];
-              var rr = 0.95 + rng() * 0.65;
-              gen.ellipsoid(rng, Math.round(q[i] * 0.55), x, y, z, rr, rr * 0.62, rr,
+              var rr = 0.98 + rng() * 0.68;
+              gen.ellipsoid(rng, Math.round(q[i] * 0.54), x, y, z, rr, rr * 0.62, rr,
                 b.push, { mat: 'CANOPY', inflate: 1, jit: 0.35 });
-              gen.volume(rng, q[i] - Math.round(q[i] * 0.55), x, y, z, rr * 0.9, rr * 0.55, rr * 0.9,
+              gen.volume(rng, q[i] - Math.round(q[i] * 0.54), x, y, z, rr * 0.92, rr * 0.55, rr * 0.92,
                 b.push, { mat: 'LEAF' });
             }
           } },
-        { name: 'city', weight: 16, fn: function (b, n, rng) {
-            var towers = 22, R = 8.1;
+        { name: 'city', weight: 17, fn: function (b, n, rng) {
+            var towers = 14, R = 8.1;
             var sizes = [];
             for (var i = 0; i < towers; i++) sizes.push(1);
-            sizes.push(2.6);                     // cathedral
+            sizes.push(2.4);                     // cathedral + buttresses
             var q = alloc(sizes, n);
             for (var i2 = 0; i2 < towers; i2++) {
-              var a = (i2 / towers) * TAU + 0.12;
+              var a = (i2 / towers) * TAU + 0.14;
               var x = Math.cos(a) * R, z = Math.sin(a) * R;
               var gy = ground(x, z) - 0.35;
-              var h = 4.6 + (i2 % 4) * 0.95 + rng() * 0.7;
-              var w = 1.10 + rng() * 0.28;
-              var qi = alloc([1, 0.9], q[i2]);
+              var h = 4.6 + (i2 % 4) * 0.95 + rng() * 0.65;
+              var w = 1.30 + rng() * 0.26;
+              var qi = alloc([1, 0.85, 0.32], q[i2]);
               gen.box(rng, qi[0], x, gy + h * 0.5, z, w, h, w, a, b.push, { mat: 'STONE' });
-              gen.cone(rng, qi[1], x, gy + h, z, w * 0.96, 2.0 + (i2 % 3) * 0.42,
+              gen.cone(rng, qi[1], x, gy + h, z, w * 0.96, 2.2 + (i2 % 3) * 0.45,
                 b.push, { mat: i2 % 2 ? 'STONE_DK' : 'STONE' });
-              // A few windows keep the capital inhabited instead of a row of
-              // silhouettes. They are cheap and sit on the outward face.
+              // buttress plinth at tower base
+              gen.box(rng, qi[2], x + Math.cos(a) * (w * 0.34), gy + 0.9, z + Math.sin(a) * (w * 0.34),
+                w * 0.56, 1.8, w * 0.56, a, b.push, { mat: 'STONE_DK' });
               for (var wi = 0; wi < 4; wi++) {
                 b.push(x + Math.cos(a) * (w * 0.51), gy + 1.4 + wi * 0.85,
                   z + Math.sin(a) * (w * 0.51), Math.cos(a), 0.12, Math.sin(a), 'WINDOW');
@@ -549,38 +570,45 @@
             var segs = towers;
             for (var s = 0; s < segs; s++) {
               if (s % 4 === 3) continue;
-              var a0 = (s / segs) * TAU + 0.12, a1 = ((s + 1) / segs) * TAU + 0.12;
+              var a0 = (s / segs) * TAU + 0.14, a1 = ((s + 1) / segs) * TAU + 0.14;
               var mx = (Math.cos(a0) + Math.cos(a1)) * 0.5 * R;
               var mz = (Math.sin(a0) + Math.sin(a1)) * 0.5 * R;
               var chord = 2 * R * Math.sin((a1 - a0) * 0.5);
-              gen.box(rng, Math.round(q[towers] * 0.16), mx, ground(mx, mz) + 1.35, mz,
-                chord * 1.02, 3.0, 0.58, -(a0 + a1) * 0.5 + Math.PI * 0.5, b.push, { mat: 'STONE_DK' });
+              gen.box(rng, Math.round(q[towers] * 0.14), mx, ground(mx, mz) + 1.35, mz,
+                chord * 1.02, 3.0, 0.62, -(a0 + a1) * 0.5 + Math.PI * 0.5, b.push, { mat: 'STONE_DK' });
             }
             // cathedral
             var ca2 = 2.1, cx2 = Math.cos(ca2) * 6.9, cz2 = Math.sin(ca2) * 6.9;
             var gy2 = ground(cx2, cz2) - 0.3;
-            var qq = alloc([2.2, 0.7, 0.5], q[towers]);
-            gen.box(rng, qq[0], cx2, gy2 + 3.2, cz2, 3.4, 6.4, 2.4, ca2, b.push, { mat: 'STONE' });
-            gen.cone(rng, qq[1], cx2, gy2 + 6.4, cz2, 2.1, 2.9, b.push, { mat: 'STONE_DK' });
-            gen.capsule(rng, qq[2], cx2, gy2 + 9.3, cz2, cx2, gy2 + 11.8, cz2, 0.16, 0.05,
+            var qq = alloc([2.2, 0.8, 0.6], q[towers]);
+            gen.box(rng, qq[0], cx2, gy2 + 3.3, cz2, 3.5, 6.6, 2.5, ca2, b.push, { mat: 'STONE' });
+            gen.cone(rng, qq[1], cx2, gy2 + 6.6, cz2, 2.2, 3.1, b.push, { mat: 'STONE_DK' });
+            gen.capsule(rng, qq[2], cx2, gy2 + 9.7, cz2, cx2, gy2 + 12.2, cz2, 0.18, 0.04,
               b.push, { mat: 'GOLD' });
           } },
-        { name: 'far', weight: 3, fn: function (b, n, rng) {
+        { name: 'far', weight: 6, fn: function (b, n, rng) {
             if (ER.flags && ER.flags.far === false) return;
-            gen.farRidge(rng, n, 64, -14, 27, 22, 219, b.push, { mat: 'FAR' });
+            var q = alloc([0.55, 0.45], n);
+            gen.farRidge(rng, q[0], 56, -13, 25, 16, 219, b.push, { mat: 'FAR' });
+            gen.farRidge(rng, q[1], 86, -17, 38, 24, 409, b.push, { mat: 'FAR_DEEP' });
           } },
-        { name: 'motes', weight: 3, fn: function (b, n, rng) {
-            var q = alloc([0.62, 0.38], n), i, a, r, y;
+        { name: 'motes', weight: 2, fn: function (b, n, rng) {
+            var q = alloc([0.54, 0.34, 0.12], n), i, a, r, y;
             for (i = 0; i < q[0]; i++) {
-              a = rng() * TAU; r = Math.sqrt(rng()) * 8.6;
-              y = 5.5 + rng() * 8.5 - r * 0.12;
+              a = rng() * TAU; r = Math.sqrt(rng()) * 8.8;
+              y = 5.5 + rng() * 9.0 - r * 0.12;
               b.push(Math.cos(a) * r, y, Math.sin(a) * r,
                 Math.cos(a), 0.2, Math.sin(a), 'MOTE', 1, 1, 1, rng() * TAU);
             }
             for (i = 0; i < q[1]; i++) {
               a = rng() * TAU; r = Math.sqrt(rng()) * 11.4;
-              y = ground(Math.cos(a) * r, Math.sin(a) * r) + rng() * 1.6;
+              y = ground(Math.cos(a) * r, Math.sin(a) * r) + rng() * 1.8;
               b.push(Math.cos(a) * r, y, Math.sin(a) * r, 0, 1, 0, 'MOTE', 0.85, 0.9, 5, rng() * TAU);
+            }
+            for (i = 0; i < q[2]; i++) {
+              a = rng() * TAU; r = 3.5 + rng() * 7.5;
+              y = ground(Math.cos(a) * r, Math.sin(a) * r) + 1.2 + rng() * 3.5;
+              b.push(Math.cos(a) * r, y, Math.sin(a) * r, 0, 1, 0, 'MIST', 1, 1, 5, rng() * TAU);
             }
           } },
         { name: 'banners', weight: 2, fn: function (b, n, rng) {
@@ -630,7 +658,9 @@
       // crag for the castle; keep its summit broad enough for the keep
       var dx = x - 5.6, dz = z + 4.2;
       var crag = 3.4 * Math.exp(-(dx * dx + dz * dz) / 22);
-      h = Math.max(h, crag + 0.6 * C.fbm2(x * 0.3, z * 0.3, 12, 2));
+      h = Math.max(h, crag + 0.58 * C.fbm2(x * 0.3, z * 0.3, 12, 2));
+      var ledgeNorm = C.clamp((h + 1.0) / 4.8, 0, 1);
+      h = C.lerp(h, C.terrace(ledgeNorm, 7, 0.30) * 4.8 - 1.0, 0.20);
       h += 0.045 * C.snoise2(wx * 1.1, wz * 1.1, 83);
       return h;
     };
@@ -638,16 +668,16 @@
     var terrainMat = function (x, y, z, nx, ny, nz) {
       var slope = 1 - ny;
       var grain = C.noise2(x * 0.63 - 2.7, z * 0.63 + 4.2, 313);
-      if (slope > 0.52 || grain > 0.88) return 'STONE_DK';
-      if (slope > 0.34) return 'CLIFF';
-      if (grain > 0.76) return 'STONE_DK';
+      if (slope > 0.48 || grain > 0.86) return 'STONE_DK';
+      if (slope > 0.30) return 'CLIFF';
+      if (grain > 0.74) return 'STONE_DK';
       return 'GROUND';
     };
 
     var cliffMat = function (y, th, t) {
-      var band = 0.5 + 0.5 * Math.sin(y * 2.4 + th * 2.7);
-      if (band > 0.72) return 'STONE_DK';
-      if (band < 0.22) return 'CLIFF';
+      var band = 0.5 + 0.5 * Math.sin(y * 3.0 + th * 2.7);
+      if (band > 0.70) return 'STONE_DK';
+      if (band < 0.26) return 'CLIFF';
       return 'STONE';
     };
     var edge = function (th) {
@@ -655,66 +685,74 @@
       return 0.78 + 0.15 * C.noise2(c * 2.6 + 3, sn * 2.6 + 9, 88)
                   + 0.08 * C.noise2(c * 6.2 + 5, sn * 6.2 + 1, 42);
     };
+    var castleGy = ground(5.6, -4.2);
+    var towerOff = [[-1.9, -1.7], [1.9, -1.7], [-1.9, 1.7], [1.9, 1.7]];
+    var towerPos = towerOff.map(function (o) {
+      return [
+        5.6 + o[0] * Math.cos(-0.55) + o[1] * Math.sin(-0.55),
+        -4.2 - o[0] * Math.sin(-0.55) + o[1] * Math.cos(-0.55)
+      ];
+    });
     return {
       id: 'limgrave', label: 'LIMGRAVE', sub: 'STORMVEIL MARCH',
       epigraph: 'rain keeps the castle\u2019s name alive.',
-      sky: { top: '#080e12', horizon: '#344a4b', bottom: '#0a1012' },
-      fog: { color: '#55686a', density: 0.008, start: 16,
-             height: { base: -1.4, density: 0.0045, falloff: 0.26, strength: 0.38 } },
-      exposure: 1.04,
+      sky: { top: '#070d12', horizon: '#33484a', bottom: '#091013' },
+      fog: { color: '#4c5f62', scatterColor: '#829a97', density: 0.0085, start: 15,
+             height: { base: -1.4, density: 0.0055, falloff: 0.25, strength: 0.46 } },
+      exposure: 1.06,
       light: (function () { var v = [0.36, 0.62, -0.70], l = Math.hypot(v[0], v[1], v[2]); return [v[0] / l, v[1] / l, v[2] / l]; })(),
-      lightCol: '#d6ded0',
+      lightCol: '#dce6da',
       sunUv: [0.62, 0.58],
       sunDisc: 0.0,
-      moon: { pos: [0.28, 0.73], size: 0.062, color: '#cfdbd2', i: 0.62 },
-      ambient: '#46534f',
+      moon: { pos: [0.28, 0.73], size: 0.064, color: '#d5e2d8', i: 0.68 },
+      ambient: '#415250',
       camera: { yaw: 1.02, pitch: 0.17, dist: 32, target: [1.1, 4.8, 0] },
       palette: ['#080d0f', '#0e1618', '#162224', '#20302f', '#2c3d3a', '#3c4f49',
                 '#4f6259', '#647568', '#7b8a79', '#93a08c', '#aab5a0', '#c3cbb6',
                 '#dbe1d2', '#eef1e6', '#40525a', '#6f8b8c'],
       mats: {
-        GROUND: { color: '#64724f', r: 0.165, a: 0.96, vary: 1, nJit: 0.55 },
-        CLIFF: { color: '#43504b', r: 0.185, a: 0.95, nJit: 0.28 },
-        STONE: { color: '#b4b3a2', r: 0.14, a: 0.96, vary: 1, nJit: 0.18 },
-        STONE_DK: { color: '#5d635b', r: 0.14, a: 0.96 },
-        ROOF: { color: '#3b4547', r: 0.12, a: 0.95 },
-        TRUNK: { color: '#4b4238', r: 0.10, a: 0.94 },
-        PINE: { color: '#2d3f31', r: 0.12, a: 0.9, nJit: 0.2 },
-        WATER: { color: '#6d8b8f', r: 0.12, a: 0.5 },
-        RAIN: { color: '#b9cfd6', r: 0.028, a: 0.30 },
-        CLOTH: { color: '#7b3038', r: 0.07, a: 0.9 },
-        WINDOW: { color: '#ffd79a', r: 0.055, a: 0.55, glow: 2.2 },
+        GROUND: { color: '#5f6f4b', r: 0.160, a: 0.98, vary: 1, nJit: 0.52 },
+        CLIFF: { color: '#3f4d48', r: 0.165, a: 0.98, strata: 0.9, nJit: 0.36 },
+        STONE: { color: '#b4b3a2', r: 0.142, a: 0.98, vary: 1, strata: 0.45, nJit: 0.22 },
+        STONE_DK: { color: '#565d56', r: 0.142, a: 0.98, strata: 0.65, nJit: 0.24 },
+        ROOF: { color: '#374245', r: 0.125, a: 0.97 },
+        TRUNK: { color: '#4b4238', r: 0.098, a: 0.95, bark: 0.8 },
+        PINE: { color: '#293b2d', r: 0.115, a: 0.93, nJit: 0.22 },
+        WATER: { color: '#6b8c91', r: 0.115, a: 0.52 },
+        RAIN: { color: '#bdd3da', r: 0.025, a: 0.32 },
+        CLOTH: { color: '#822f37', r: 0.072, a: 0.93 },
+        WINDOW: { color: '#ffd693', r: 0.052, a: 0.62, glow: 2.3 },
         MOON: { color: '#e8efe4', r: 1.9, a: 0.055, glow: 1.2 },
-        MIST: { color: '#8fa09c', r: 2.8, a: 0.030 },
-        FAR: { color: '#3e5355', r: 0.58, a: 0.33, noAO: true }
+        MIST: { color: '#8ea29f', r: 2.5, a: 0.032, noAO: true },
+        FAR: { color: '#3f5558', r: 0.96, a: 0.48, noAO: true },
+        FAR_DEEP: { color: '#2a3c40', r: 1.28, a: 0.36, noAO: true }
       },
       emit: [
-        { name: 'ground', weight: 27, shadow: true, fn: function (b, n, rng) {
+        { name: 'ground', weight: 24, shadow: true, fn: function (b, n, rng) {
             gen.heightfield(rng, n, 11.6, ground, b.push,
               { mat: 'GROUND', edge: edge, matFn: terrainMat });
           } },
-        { name: 'skirt', weight: 5, fn: function (b, n, rng) {
-            var q = alloc([1, 0.42], n);
-            gen.skirt(rng, q[0], 11.6, ground, -3.8, b.push,
+        { name: 'skirt', weight: 6, fn: function (b, n, rng) {
+            gen.skirt(rng, n, 11.6, ground, -3.9, b.push,
               { mat: 'CLIFF', edge: edge, matFn: cliffMat });
-            gen.ellipsoid(rng, q[1], -4.5, -3.2, 4.2, 2.1, 1.0, 1.6, b.push, { mat: 'CLIFF', inflate: 0.92, jit: 0.5 });
           } },
-        { name: 'castle', weight: 20, fn: function (b, n, rng) {
+        { name: 'castle', weight: 21, fn: function (b, n, rng) {
             var bx = 5.6, bz = -4.2, gy = ground(bx, bz) - 0.4, yaw = -0.55;
-            var q = alloc([2.6, 1.0, 0.55, 1.4, 0.5, 1.0, 0.6], n);
-            // keep
-            gen.box(rng, q[0], bx, gy + 3.1, bz, 3.4, 6.2, 3.0, yaw, b.push, { mat: 'STONE' });
+            var q = alloc([2.6, 1.0, 0.55, 1.4, 0.5, 1.1, 0.65], n);
+            // keep + lower stepped bastion
+            gen.box(rng, Math.round(q[0] * 0.78), bx, gy + 3.1, bz, 3.4, 6.2, 3.0, yaw, b.push, { mat: 'STONE' });
+            gen.box(rng, q[0] - Math.round(q[0] * 0.78), bx, gy + 1.4, bz, 4.2, 2.8, 3.8, yaw, b.push, { mat: 'STONE_DK' });
             // crenellations along the keep roof
-            gen.box(rng, q[1], bx, gy + 6.3, bz, 3.9, 0.34, 3.5, yaw, b.push, { mat: 'STONE_DK' });
+            gen.box(rng, q[1], bx, gy + 6.3, bz, 3.9, 0.36, 3.5, yaw, b.push, { mat: 'STONE_DK' });
             // four towers
             var off = [[-1.9, -1.7], [1.9, -1.7], [-1.9, 1.7], [1.9, 1.7]];
             for (var i = 0; i < 4; i++) {
               var ox = off[i][0], oz = off[i][1];
               var wx = bx + ox * Math.cos(yaw) + oz * Math.sin(yaw);
               var wz = bz - ox * Math.sin(yaw) + oz * Math.cos(yaw);
-              var hh = 6.4 + (i % 2) * 1.1;
-              gen.cylinder(rng, Math.round(q[2] / 4), wx, gy, wz, 0.72, 0.66, hh, b.push, { mat: 'STONE' });
-              gen.cone(rng, Math.round(q[3] / 4), wx, gy + hh, wz, 0.78, 1.7, b.push, { mat: 'ROOF' });
+              var hh = 6.5 + (i % 2) * 1.2;
+              gen.cylinder(rng, Math.round(q[2] / 4), wx, gy, wz, 0.74, 0.66, hh, b.push, { mat: 'STONE' });
+              gen.cone(rng, Math.round(q[3] / 4), wx, gy + hh, wz, 0.80, 1.85, b.push, { mat: 'ROOF' });
             }
             // curtain wall running down the crag
             for (var s = 0; s < 5; s++) {
@@ -724,9 +762,9 @@
               var x1 = x0 - 2.1, z1 = z0 + 1.5;
               var my = (ground(x0, z0) + ground(x1, z1)) * 0.5;
               gen.box(rng, Math.round(q[4] / 5), (x0 + x1) * 0.5, my + 1.25, (z0 + z1) * 0.5,
-                2.7, 2.65, 0.38, Math.atan2(z1 - z0, x1 - x0) * -1 + Math.PI * 0.5, b.push, { mat: 'STONE_DK' });
+                2.7, 2.65, 0.40, Math.atan2(z1 - z0, x1 - x0) * -1 + Math.PI * 0.5, b.push, { mat: 'STONE_DK' });
             }
-            // a few windows lit from within
+            // windows lit from within
             for (var wi = 0; wi < 9; wi++) {
               var wx = bx - 1.3 + (wi % 3) * 1.3;
               var wy = gy + 1.6 + Math.floor(wi / 3) * 1.7;
@@ -735,18 +773,15 @@
                   bz + 1.53 + (rng() - 0.5) * 0.05, 0, 0.2, 1, 'WINDOW');
               }
             }
-            // A gate arch gives the front face a readable entrance and a scale
-            // cue. Stormveil is recognisable by the way one crosses into it.
             gen.arc(rng, Math.round(q[6] * 0.55), bx, gy + 1.35, bz + 1.58, 0.82, 0.16,
               0.10, Math.PI - 0.10, b.push, { mat: 'STONE' });
             gen.box(rng, Math.round(q[6] * 0.2), bx - 0.96, gy + 0.9, bz + 1.55, 0.24, 1.8, 0.22, 0, b.push, { mat: 'STONE_DK' });
             gen.box(rng, Math.round(q[6] * 0.2), bx + 0.96, gy + 0.9, bz + 1.55, 0.24, 1.8, 0.22, 0, b.push, { mat: 'STONE_DK' });
-            // two banners on the keep face
             gen.cloth(rng, Math.round(q[5] * 0.5), bx - 1.1, gy + 5.9, bz + 1.55, 0.8, 2.4, yaw, b.push, { mat: 'CLOTH' });
             gen.cloth(rng, Math.round(q[5] * 0.5), bx + 1.1, gy + 5.9, bz + 1.55, 0.8, 2.4, yaw, b.push, { mat: 'CLOTH' });
           } },
         { name: 'pines', weight: 14, fn: function (b, n, rng) {
-            var k = 15, q = alloc(new Array(k).fill(1), n);
+            var k = 16, q = alloc(new Array(k).fill(1), n);
             for (var i = 0; i < k; i++) {
               var x = 0, z = 0, guard = 0;
               do {
@@ -755,7 +790,7 @@
               } while (guard++ < 12 &&
                        (Math.hypot(x - 5.6, z + 4.2) < 3.8 || Math.hypot(x, z) < 1.6));
               var gy = ground(x, z) - 0.1;
-              var hh = 2.6 + rng() * 2.2, sw = 0.55 + rng() * 0.3;
+              var hh = 2.6 + rng() * 2.4, sw = 0.55 + rng() * 0.3;
               var qi = alloc([0.3, 1, 0.8, 0.6], q[i]);
               gen.capsule(rng, qi[0], x, gy, z, x, gy + hh * 0.45, z, 0.14, 0.09, b.push, { mat: 'TRUNK' });
               gen.cone(rng, qi[1], x, gy + hh * 0.2, z, sw * 1.5, hh * 0.55, b.push, { mat: 'PINE' });
@@ -764,17 +799,17 @@
             }
           } },
         { name: 'stones', weight: 9, fn: function (b, n, rng) {
-            var k = 18, q = alloc(new Array(k).fill(1), n);
+            var k = 20, q = alloc(new Array(k).fill(1), n);
             for (var i = 0; i < k; i++) {
               var a = rng() * TAU, r = 3 + Math.sqrt(rng()) * 8;
               var x = Math.cos(a) * r, z = Math.sin(a) * r;
               var gy = ground(x, z);
               if (i % 2 === 0) {
-                var rr = 0.45 + rng() * 0.38;
+                var rr = 0.45 + rng() * 0.40;
                 gen.ellipsoid(rng, q[i], x, gy + rr * 0.32, z, rr * 1.2, rr * 0.7, rr,
                   b.push, { mat: 'STONE_DK', inflate: 0.94, jit: 0.25 });
               } else {
-                var hh = 1.0 + rng() * 2.0;
+                var hh = 1.0 + rng() * 2.1;
                 gen.box(rng, q[i], x, gy + hh * 0.4, z, 0.46 + rng() * 0.3, hh, 0.36 + rng() * 0.24,
                   rng() * TAU, b.push, { mat: 'STONE_DK' });
               }
@@ -792,32 +827,38 @@
             gen.disc(rng, Math.round(n * 0.3), 2.6, ground(2.6, 7.2) + 0.06, 7.2, 1.4, b.push, { mat: 'WATER' });
             gen.disc(rng, Math.round(n * 0.2), -6.4, ground(-6.4, -1.2) + 0.05, -1.2, 1.1, b.push, { mat: 'WATER' });
           } },
-        { name: 'far', weight: 3, fn: function (b, n, rng) {
+        { name: 'far', weight: 6, fn: function (b, n, rng) {
             if (ER.flags && ER.flags.far === false) return;
-            gen.farRidge(rng, n, 62, -15, 25, 24, 219, b.push, { mat: 'FAR' });
+            var q = alloc([0.55, 0.45], n);
+            gen.farRidge(rng, q[0], 56, -14, 25, 18, 219, b.push, { mat: 'FAR' });
+            gen.farRidge(rng, q[1], 86, -18, 38, 24, 377, b.push, { mat: 'FAR_DEEP' });
           } },
-        { name: 'rain', weight: 8, fn: function (b, n, rng) {
-            for (var i = 0; i < n; i++) {
+        { name: 'rain', weight: 7, fn: function (b, n, rng) {
+            var q = alloc([0.85, 0.15], n), i;
+            for (i = 0; i < q[0]; i++) {
               var a = rng() * TAU, r = Math.sqrt(rng()) * 13;
               var y = rng() * 15;
               b.push(Math.cos(a) * r, y, Math.sin(a) * r, 0, 1, 0, 'RAIN', 1, 1, 2, rng() * TAU);
+            }
+            for (i = 0; i < q[1]; i++) {
+              var ma = rng() * TAU, mr = 2.5 + rng() * 9.0;
+              var mx = Math.cos(ma) * mr, mz = Math.sin(ma) * mr;
+              b.push(mx, ground(mx, mz) + 0.7 + rng() * 2.2, mz, 0, 1, 0, 'MIST', 1, 1, 5, rng() * TAU);
             }
           } }
       ],
       macro: function (x, y, z) {
         var d = y - ground(x, z);
-        var gy0 = ground(5.6, -4.2);
+        var gy0 = castleGy;
         // castle block
         var bx = Math.abs(x - 5.6) - 2.4, by = Math.abs(y - (gy0 + 3.1)) - 3.2, bz = Math.abs(z + 4.2) - 2.2;
         var db = Math.hypot(Math.max(bx, 0), Math.max(by, 0), Math.max(bz, 0)) + Math.min(Math.max(bx, Math.max(by, bz)), 0);
         if (db < d) d = db;
         // four corner towers, approximated as vertical capsules
+        var my = gy0 + 3.6;
         for (var mi = 0; mi < 4; mi++) {
-          var sx = (mi & 1) ? 1.9 : -1.9, sz = (mi & 2) ? 1.9 : -1.7;
-          var mx = 5.6 + sx * Math.cos(-0.55) + sz * Math.sin(-0.55);
-          var mz = -4.2 - sx * Math.sin(-0.55) + sz * Math.cos(-0.55);
-          var my = gy0 + 3.6;
-          var dd = Math.hypot(x - mx, Math.max(0, Math.abs(y - my) - 3.0), z - mz) - 0.8;
+          var tp = towerPos[mi];
+          var dd = Math.hypot(x - tp[0], Math.max(0, Math.abs(y - my) - 3.0), z - tp[1]) - 0.8;
           if (dd < d) d = dd;
         }
         return d;
@@ -835,11 +876,13 @@
       var h = 0.78 * C.fbm2(wx * 0.13 + 5.3, wz * 0.13 - 2.2, 213, 4);
       h += 0.42 * C.ridged2(wx * 0.26, wz * 0.26, 8, 3) - 0.20;
 
-      // cracked runnels and a shallow rot basin
+      // cracked runnels, stepped mesa shelves, and a shallow rot basin
       var crack = 1 - Math.abs(C.snoise2(wx * 0.37 + 1.2, wz * 0.29 - 4.6, 307));
-      h -= 0.22 * Math.pow(C.clamp(crack, 0, 1), 10);
+      h -= 0.24 * Math.pow(C.clamp(crack, 0, 1), 10);
       var r2 = x * x + z * z;
       h -= 0.62 * Math.exp(-r2 / 18);
+      var mesaNorm = C.clamp((h + 1.1) / 3.4, 0, 1);
+      h = C.lerp(h, C.terrace(mesaNorm, 5, 0.26) * 3.4 - 1.1, 0.24);
       h += 0.04 * C.snoise2(wx * 1.6, wz * 1.6, 53);
       return h;
     };
@@ -848,8 +891,8 @@
       var slope = 1 - ny;
       var grain = C.noise2(x * 0.57 + 3.8, z * 0.57 - 1.4, 331);
       var ash = C.noise2(x * 0.21 - 2.6, z * 0.21 + 7.1, 127);
-      if (slope > 0.52) return 'RUST';
-      if (slope > 0.33) return 'CLIFF';
+      if (slope > 0.50) return 'RUST';
+      if (slope > 0.31) return 'CLIFF';
       if (grain > 0.82) return 'BONE';
       if (grain > 0.61) return 'PALE';
       if (ash > 0.64) return 'SOIL';
@@ -858,8 +901,8 @@
     };
 
     var cliffMat = function (y, th, t) {
-      var band = 0.5 + 0.5 * Math.sin(y * 2.9 + th * 2.3);
-      if (band > 0.77) return 'RUST';
+      var band = 0.5 + 0.5 * Math.sin(y * 3.1 + th * 2.3);
+      if (band > 0.74) return 'RUST';
       return 'CLIFF';
     };
 
@@ -894,54 +937,57 @@
       return 0.82 + 0.14 * C.noise2(c * 3.1 + 2, sn * 3.1 + 6, 55)
                   + 0.06 * C.noise2(c * 7.4 + 8, sn * 7.4 + 3, 24);
     };
+    var heroTreeGy = ground(-3.4, 2.2);
+    var ruinGy = ground(4.8, -3.6);
+    var monoX = Math.cos(1.2) * 6.8, monoZ = Math.sin(1.2) * 6.8;
+    var monoGy = ground(monoX, 3.2);
     return {
       id: 'caelid', label: 'CAELID', sub: 'THE SCARLET WASTE',
       epigraph: 'nothing here was burned. it was infected.',
-      sky: { top: '#120609', horizon: '#472b28', bottom: '#150809' },
-      fog: { color: '#4b3d38', density: 0.0065, start: 17,
-             height: { base: -1.8, density: 0.0035, falloff: 0.26, strength: 0.30 } },
-      exposure: 1.04,
+      sky: { top: '#140508', horizon: '#552923', bottom: '#160809' },
+      fog: { color: '#523732', scatterColor: '#c2573c', density: 0.0072, start: 16,
+             height: { base: -1.6, density: 0.0042, falloff: 0.25, strength: 0.38 } },
+      exposure: 1.06,
       light: (function () { var v = [0.52, 0.66, 0.54], l = Math.hypot(v[0], v[1], v[2]); return [v[0] / l, v[1] / l, v[2] / l]; })(),
-      lightCol: '#ffd0b2',
+      lightCol: '#ffcca8',
       sunUv: [0.62, 0.52],
-      sunDisc: 0.22,
-      ambient: '#6b6156',
+      sunDisc: 0.24,
+      ambient: '#6a564c',
       camera: { yaw: 0.92, pitch: 0.20, dist: 30, target: [0.4, 4.2, 0] },
       palette: ['#100407', '#1c0709', '#2a0c0c', '#3a1210', '#4d1a14', '#63241a',
                 '#7c3120', '#984227', '#b3552f', '#c96b3a', '#d9863f', '#8a6a4a',
                 '#a88a63', '#c7ab84', '#5b1a1c', '#7a2a22'],
       mats: {
-        CRUST: { color: '#4a3730', r: 0.168, a: 0.96, vary: 1, nJit: 0.55 },
-        CLIFF: { color: '#452b26', r: 0.185, a: 0.95, nJit: 0.28 },
-        ROT_BARK: { color: '#2e2521', r: 0.105, a: 0.94, nJit: 0.7 },
-        ASH: { color: '#857a6c', r: 0.1, a: 0.5 },
-        BONE: { color: '#b4a68c', r: 0.09, a: 0.9, nJit: 0.16 },
-        SCARLET: { color: '#c33f28', r: 0.13, a: 0.72, glow: 0.72 },
-        EMBER: { color: '#e0773a', r: 0.05, a: 0.6, glow: 1.35 },
-        RUST: { color: '#76503c', r: 0.115, a: 0.93, nJit: 0.18 },
-        STONE: { color: '#8d816d', r: 0.14, a: 0.96, vary: 1, nJit: 0.18 },
-        STONE: { color: '#8d816d', r: 0.14, a: 0.96, vary: 1, nJit: 0.18 },
-        GLOW: { color: '#ffb070', r: 0.05, a: 0.6, glow: 1.6 },
-        SOIL: { color: '#5d473d', r: 0.145, a: 0.95, vary: 1, nJit: 0.45 },
-        PALE: { color: '#97866d', r: 0.145, a: 0.95, vary: 1, nJit: 0.25 },
-        ROT: { color: '#72241d', r: 0.14, a: 0.66 },
-        HAZE: { color: '#7a1f18', r: 2.6, a: 0.032 },
-        FAR: { color: '#53241f', r: 0.56, a: 0.34, noAO: true }
+        CRUST: { color: '#4c3830', r: 0.160, a: 0.98, vary: 1, strata: 0.45, nJit: 0.52 },
+        CLIFF: { color: '#452b25', r: 0.165, a: 0.98, strata: 0.9, nJit: 0.34 },
+        ROT_BARK: { color: '#2d231f', r: 0.105, a: 0.96, bark: 0.85, nJit: 0.68 },
+        ASH: { color: '#8d8070', r: 0.092, a: 0.52 },
+        BONE: { color: '#bab096', r: 0.098, a: 0.95, nJit: 0.18 },
+        SCARLET: { color: '#c84229', r: 0.125, a: 0.76, glow: 0.82 },
+        EMBER: { color: '#e67d3d', r: 0.048, a: 0.66, glow: 1.45 },
+        RUST: { color: '#78503b', r: 0.128, a: 0.96, strata: 0.6, nJit: 0.22 },
+        STONE: { color: '#8f826e', r: 0.142, a: 0.98, vary: 1, strata: 0.45, nJit: 0.22 },
+        GLOW: { color: '#ffb070', r: 0.05, a: 0.65, glow: 1.65 },
+        SOIL: { color: '#5f473d', r: 0.148, a: 0.97, vary: 1, nJit: 0.42 },
+        PALE: { color: '#9c8a70', r: 0.148, a: 0.97, vary: 1, nJit: 0.24 },
+        ROT: { color: '#7a251d', r: 0.135, a: 0.70 },
+        HAZE: { color: '#84241c', r: 2.3, a: 0.032, noAO: true },
+        FAR: { color: '#5c2a24', r: 0.96, a: 0.48, noAO: true },
+        FAR_DEEP: { color: '#3f1a18', r: 1.28, a: 0.36, noAO: true }
       },
       emit: [
-        { name: 'ground', weight: 25, shadow: true, fn: function (b, n, rng) {
+        { name: 'ground', weight: 23, shadow: true, fn: function (b, n, rng) {
             gen.heightfield(rng, n, 11.2, ground, b.push,
               { mat: 'CRUST', edge: edge, matFn: terrainMat });
           } },
-        { name: 'skirt', weight: 4, fn: function (b, n, rng) {
-            gen.skirt(rng, n, 11.2, ground, -3.6, b.push,
+        { name: 'skirt', weight: 5, fn: function (b, n, rng) {
+            gen.skirt(rng, n, 11.2, ground, -3.7, b.push,
               { mat: 'CLIFF', edge: edge, matFn: cliffMat });
           } },
-        { name: 'heroTree', weight: 15, fn: function (b, n, rng) {
+        { name: 'heroTree', weight: 14, fn: function (b, n, rng) {
             var x = -3.4, z = 2.2, gy = ground(x, z);
             var segs = [];
             collectDead(rng, x, gy, z, 6.4, 0.62, 3, 0.12, 0.99, -0.05, segs);
-            // buttress roots
             for (var i = 0; i < 5; i++) {
               var a = (i / 5) * TAU + 0.4;
               var x1 = x + Math.cos(a) * 1.9, z1 = z + Math.sin(a) * 1.9;
@@ -949,22 +995,20 @@
             }
             emitSegs(b, rng, segs, n);
           } },
-        { name: 'ribs', weight: 4, fn: function (b, n, rng) {
+        { name: 'ribs', weight: 5, fn: function (b, n, rng) {
             var cx = 1.2, cz = 5.2, gy = ground(cx, cz);
-            var ribs = 6, q = alloc(new Array(ribs).fill(1), n);
-            // A half-buried rib cage is a value anchor in an otherwise
-            // monochrome red basin; bone reads instantly against rot.
+            var ribs = 7, q = alloc(new Array(ribs).fill(1), n);
             for (var i = 0; i < ribs; i++) {
-              var z = cz + (i - ribs * 0.5) * 0.86;
+              var z = cz + (i - ribs * 0.5) * 0.84;
               var lean = 0.35 + rng() * 0.35;
-              var top = gy + 2.35 + 0.60 * Math.sin(i * 1.7);
+              var top = gy + 2.45 + 0.62 * Math.sin(i * 1.5);
               gen.capsule(rng, Math.round(q[i] * 0.34), cx, gy - 0.15, z, cx + 2.0, top, z, 0.24, 0.14, b.push, { mat: 'BONE' });
               gen.capsule(rng, Math.round(q[i] * 0.34), cx + 4.0, gy - 0.15, z, cx + 2.0, top, z, 0.24, 0.14, b.push, { mat: 'BONE' });
-              gen.capsule(rng, q[i] - Math.round(q[i] * 0.68), cx + 2.0, top, z, cx + 2.0 + lean * 0.3, top + 0.5, z, 0.13, 0.05, b.push, { mat: 'BONE' });
+              gen.capsule(rng, q[i] - Math.round(q[i] * 0.68), cx + 2.0, top, z, cx + 2.0 + lean * 0.3, top + 0.52, z, 0.13, 0.05, b.push, { mat: 'BONE' });
             }
             gen.capsule(rng, Math.round(n * 0.08), cx - 0.4, gy + 0.7, cz - 2.8, cx - 0.1, gy + 0.35, cz + 3.2, 0.24, 0.08, b.push, { mat: 'BONE' });
           } },
-        { name: 'deadTrees', weight: 11, fn: function (b, n, rng) {
+        { name: 'deadTrees', weight: 10, fn: function (b, n, rng) {
             var k = 6, segs = [];
             for (var i = 0; i < k; i++) {
               var a = rng() * TAU, r = 4.6 + Math.sqrt(rng()) * 5.6;
@@ -981,10 +1025,9 @@
             for (var i = 0; i < k; i++) {
               var a = rng() * TAU, r = 2.8 + Math.sqrt(rng()) * 7.4;
               var x = Math.cos(a) * r, z = Math.sin(a) * r, gy = ground(x, z);
-              var hh = 2.2 + rng() * 2.4;
+              var hh = 2.2 + rng() * 2.5;
               gen.box(rng, q[i], x, gy + hh * 0.42, z, 0.62 + rng() * 0.3, hh, 0.34, rng() * TAU,
                 b.push, { mat: i % 2 ? 'STONE' : 'RUST' });
-              // a glowing seam down one face
               for (var s = 0; s < 6; s++) {
                 b.push(x + (rng() - 0.5) * 0.4, gy + 0.4 + rng() * (hh - 0.8), z + 0.19,
                   (rng() - 0.5) * 0.3, 0.2, 1, 'GLOW');
@@ -995,11 +1038,9 @@
             var x = 4.8, z = -3.6, gy = ground(x, z), yaw = 0.42;
             var q = alloc([2.2, 1.2, 0.9], n);
             gen.box(rng, q[0], x, gy + 2.4, z, 4.6, 4.8, 0.5, yaw, b.push, { mat: 'STONE' });
-            // punched doorway
             gen.box(rng, q[1], x + Math.cos(yaw) * 0.1, gy + 1.1, z + 0.35, 1.5, 2.2, 0.28, yaw,
               b.push, { mat: 'CRUST' });
             gen.arc(rng, q[2], x - 1.9, gy, z + 1.4, 1.1, 0.2, 0.2, Math.PI - 0.2, b.push, { mat: 'BONE' });
-            // rubble
             for (var i = 0; i < 40; i++) {
               var a = rng() * TAU, r = rng() * 2.6;
               var px = x + Math.cos(a) * r, pz = z + Math.sin(a) * r;
@@ -1010,46 +1051,51 @@
           } },
         { name: 'rot', weight: 6, fn: function (b, n, rng) {
             gen.disc(rng, Math.round(n * 0.45), 1.2, ground(1.2, 0.4) + 0.1, 0.4, 3.4, b.push, { mat: 'ROT' });
-            // rot crystals growing out of the basin
-            for (var i = 0; i < 26; i++) {
+            for (var i = 0; i < 28; i++) {
               var a = rng() * TAU, r = 0.4 + Math.sqrt(rng()) * 3.2;
               var x = 1.2 + Math.cos(a) * r, z = 0.4 + Math.sin(a) * r;
-              var hh = 0.2 + rng() * 0.7;
+              var hh = 0.25 + rng() * 0.78;
               gen.cone(rng, 30, x, ground(x, z), z, 0.12 + rng() * 0.1, hh, b.push, { mat: 'SCARLET' });
             }
             for (var j = 0; j < Math.round(n * 0.2); j++) {
               var aa = rng() * TAU, rr = Math.sqrt(rng()) * 5;
-              b.push(1.2 + Math.cos(aa) * rr, ground(1.2, 0.4) + rng() * 0.6, 0.4 + Math.sin(aa) * rr,
+              b.push(1.2 + Math.cos(aa) * rr, ground(1.2, 0.4) + rng() * 0.65, 0.4 + Math.sin(aa) * rr,
                 0, 1, 0, 'EMBER', 1, 1, 3, rng() * TAU);
             }
           } },
-        { name: 'far', weight: 3, fn: function (b, n, rng) {
+        { name: 'far', weight: 6, fn: function (b, n, rng) {
             if (ER.flags && ER.flags.far === false) return;
-            gen.farRidge(rng, n, 60, -15, 26, 24, 219, b.push, { mat: 'FAR' });
+            var q = alloc([0.55, 0.45], n);
+            gen.farRidge(rng, q[0], 54, -14, 25, 18, 219, b.push, { mat: 'FAR' });
+            gen.farRidge(rng, q[1], 84, -18, 38, 24, 431, b.push, { mat: 'FAR_DEEP' });
           } },
-        { name: 'ash', weight: 9, fn: function (b, n, rng) {
-          for (var i = 0; i < n; i++) {
+        { name: 'ash', weight: 8, fn: function (b, n, rng) {
+          var q = alloc([0.82, 0.18], n), i;
+          for (i = 0; i < q[0]; i++) {
             var a = rng() * TAU, r = Math.sqrt(rng()) * 12;
             b.push(Math.cos(a) * r, ground(Math.cos(a) * r, Math.sin(a) * r) + rng() * 9,
               Math.sin(a) * r, 0, 1, 0, 'ASH', 0.8 + rng() * 0.6, 1, 3, rng() * TAU);
+          }
+          for (i = 0; i < q[1]; i++) {
+            var ha = rng() * TAU, hr = 1.5 + rng() * 8.5;
+            var hx = Math.cos(ha) * hr, hz = Math.sin(ha) * hr;
+            b.push(hx, ground(hx, hz) + 0.4 + rng() * 1.8, hz, 0, 1, 0, 'HAZE', 1, 1, 5, rng() * TAU);
           }
         } }
       ],
       macro: function (x, y, z) {
         var d = y - ground(x, z);
-        var tx = -3.4, tz = 2.2, ty = ground(tx, tz);
-        var dt = Math.hypot(x - tx, (y - ty - 3.2) * 0.42, z - tz) - 1.1;
+        var dt = Math.hypot(x + 3.4, (y - heroTreeGy - 3.2) * 0.42, z - 2.2) - 1.1;
         if (dt < d) d = dt;
         // ruin wall and a representative monolith: enough to anchor contact
         // shadow without evaluating every random piece in the field.
-        var rx = Math.abs(x - 4.8) - 2.4, ry = Math.abs(y - (ground(4.8, -3.6) + 2.4)) - 2.5;
+        var rx = Math.abs(x - 4.8) - 2.4, ry = Math.abs(y - (ruinGy + 2.4)) - 2.5;
         var rz = Math.abs(z + 3.6) - 0.36;
         var dr = Math.hypot(Math.max(rx, 0), Math.max(ry, 0), Math.max(rz, 0))
                + Math.min(Math.max(rx, Math.max(ry, rz)), 0);
         if (dr < d) d = dr;
-        var mz = 3.2;
-        var dm = Math.hypot(x - Math.cos(1.2) * 6.8, Math.max(0, Math.abs(y - ground(Math.cos(1.2) * 6.8, mz) - 2.0) - 2.0),
-                           z - Math.sin(1.2) * 6.8) - 0.55;
+        var dm = Math.hypot(x - monoX, Math.max(0, Math.abs(y - monoGy - 2.0) - 2.0),
+                           z - monoZ) - 0.55;
         if (dm < d) d = dm;
         return d;
       }

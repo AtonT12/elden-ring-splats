@@ -13,7 +13,7 @@
   var state = {
     realm: 'erdtree',
     seed: 'aster',
-    count: 60000,
+    count: 75000,
     size: 1,
     px: 3,
     ditherAmount: 0.6,
@@ -66,6 +66,7 @@
     el.view = $('view');
     el.debug = $('debug');
     el.hash = $('foot-hash');
+    el.contextLost = $('context-lost');
     el.s = {
       fps: $('s-fps'), frame: $('s-frame'), splats: $('s-splats'),
       res: $('s-res'), sort: $('s-sort'), gen: $('s-gen')
@@ -194,8 +195,10 @@
     var stage = document.getElementById('stage');
     var sw = stage.clientWidth, sh = stage.clientHeight;
     var compact = sw <= 760;
-    var availW = Math.max(240, sw - (compact ? 20 : 348));
-    var availH = sh * (compact ? 0.72 : 0.82);
+    var reserveW = compact ? 24 : (state.collapsed ? 56 : 352);
+    var reserveH = compact ? 72 : 108;
+    var availW = Math.max(260, sw - reserveW);
+    var availH = Math.max(180, sh - reserveH);
     // Keep a cinematic canvas on phones instead of a tall, narrow crop.
     var aspect = C.clamp(sw / sh, 1.25, 1.9);
     var iw, ih, cssW, cssH;
@@ -299,8 +302,11 @@
   /* ---------- panel state ---------- */
   function setRealm(id) {
     state.realm = id;
+    document.body.setAttribute('data-realm', id);
     el.tabs.forEach(function (t) {
-      t.classList.toggle('on', t.getAttribute('data-realm') === id);
+      var active = t.getAttribute('data-realm') === id;
+      t.classList.toggle('on', active);
+      t.setAttribute('aria-pressed', active ? 'true' : 'false');
     });
   }
 
@@ -313,8 +319,13 @@
     el.btnReopen.setAttribute('aria-expanded', state.collapsed ? 'false' : 'true');
     document.body.classList.toggle('panel-collapsed', state.collapsed);
     if (silent) return;
+    ER.bus.emit('action', 'relayout');
     if (state.collapsed) el.btnReopen.focus({ preventScroll: true });
     else el.btnCollapse.focus({ preventScroll: true });
+  }
+
+  function showContextLost(on) {
+    if (el.contextLost) el.contextLost.classList.toggle('show', !!on);
   }
 
   function isCollapsed() { return state.collapsed; }
@@ -371,7 +382,7 @@
     hideLoading: hideLoading, showLoading: showLoading, setTitle: setTitle,
     setRealm: setRealm, setCollapsed: setCollapsed, isCollapsed: isCollapsed,
     setScaleLabel: setScaleLabel, setPixelMode: setPixelMode, setDither: setDither,
-    setSeed: setSeed, setCount: setCount,
+    setSeed: setSeed, setCount: setCount, showContextLost: showContextLost,
     stats: stats, setHash: setHash, debug: debug, state: state
   };
 })(window.ER = window.ER || {});

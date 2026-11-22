@@ -50,17 +50,17 @@
         }
         m = B._matCache[matKey] = {
           c: C.hexLin ? C.hexLin(src.color) : C.hexToRgb(src.color), r: src.r, a: src.a,
-          glow: src.glow || 0, noAO: !!src.noAO, vary: src.vary || 0, nJit: src.nJit || 0
+          glow: src.glow || 0, noAO: !!src.noAO, vary: src.vary || 0,
+          strata: src.strata || 0, bark: src.bark || 0, nJit: src.nJit || 0
         };
       }
 
-      // A little normal grain: without it, a smooth cylinder shows a single
-      // hard highlight band instead of reading as bark. Applied once only.
+      // World-space surface micro-normal grain for rock & bark tactility.
       if (m.nJit) {
         var jn = m.nJit;
-        nx += (C.noise2(y * 2.7, x * 2.7, 7) - 0.5) * jn;
-        ny += (C.noise2(z * 2.7, y * 2.7, 13) - 0.5) * jn;
-        nz += (C.noise2(x * 2.7, z * 2.7, 19) - 0.5) * jn;
+        nx += (C.noise2(y * 2.9, x * 2.9, 7) - 0.5) * jn;
+        ny += (C.noise2(z * 2.9, y * 2.9, 13) - 0.5) * jn;
+        nz += (C.noise2(x * 2.9, z * 2.9, 19) - 0.5) * jn;
         var nl = 1 / (Math.hypot(nx, ny, nz) || 1);
         nx *= nl; ny *= nl; nz *= nl;
       }
@@ -71,22 +71,19 @@
 
       var ao = 1;
       if (!m.noAO && B.aoAmt > 0) {
-        var occ = 0, h, sca = 1, macro = B.macro;
+        var occ = 0, h, macro = B.macro;
         for (var k = 0; k < 5; k++) {
           h = HA[k];
           occ += (h - macro(x + nx * h, y + ny * h, z + nz * h)) * AO_W[k];
-          sca *= 0.9;
         }
-        ao = 1 - 1.9 * occ;
-        if (ao < 0.12) ao = 0.12; else if (ao > 1) ao = 1;
+        ao = 1 - 1.95 * occ;
+        if (ao < 0.10) ao = 0.10; else if (ao > 1) ao = 1;
+        ao = Math.pow(ao, 1.32);
         if (B.aoAmt < 1) ao = 1 + (ao - 1) * B.aoAmt;
       }
 
       var sh = 1;
       if (B.shadow) {
-        // Seven taps, but instead of a binary cut we keep the closest
-        // distance/step ratio. That turns the old stamped black patch into a
-        // soft penumbra while costing exactly the same number of samples.
         var macro2 = B.macro, pen = 1;
         for (var s = 0; s < 7; s++) {
           var d = macro2(x + L[0] * SUN_T[s], y + L[1] * SUN_T[s], z + L[2] * SUN_T[s]);
@@ -94,34 +91,47 @@
           pen = Math.min(pen, 7.5 * d / SUN_T[s]);
         }
         sh = (ER.flags && ER.flags.softshadow === false)
-          ? (pen < 0.001 ? 0.22 : 1)
-          : 0.24 + 0.76 * C.clamp(pen, 0, 1);
+          ? (pen < 0.001 ? 0.20 : 1)
+          : 0.22 + 0.78 * C.clamp(pen, 0, 1);
       }
 
       var sky = 0.5 + 0.5 * ny;
-      // Two lights: a directional key tinted by the realm's sun, plus a
-      // hemispheric bounce tinted by its ambient.
-      var kd = (0.10 + 0.90 * key) * (0.55 + 0.45 * sh) * ao;
-      var ka = (0.36 + 0.44 * sky) * (0.45 + 0.55 * sh) * ao;
+      var bounce = Math.max(0, -ny) * 0.14;
+      // Three-point light balance: warm directional key, sky hemisphere, and
+      // warm/cool ground bounce so undersides keep sculptural clarity.
+      var kd = (0.08 + 0.92 * key) * (0.50 + 0.50 * sh) * ao;
+      var ka = (0.34 + 0.48 * sky + bounce) * (0.44 + 0.56 * sh) * ao;
       var lr = B.lc[0] * kd + B.ac[0] * ka;
       var lg = B.lc[1] * kd + B.ac[1] * ka;
       var lb = B.lc[2] * kd + B.ac[2] * ka;
 
       // Glow keeps its own hue instead of collapsing every emissive surface
       // toward the same chalk-white core.
-      var g = m.glow * 0.42; if (g > 1) g = 1;
+      var g = m.glow * 0.44; if (g > 1) g = 1;
       if (g > 0) {
-        var tgtR = m.c[0] * 2.4 + 0.12;
-        var tgtG = m.c[1] * 1.65 + 0.08;
-        var tgtB = m.c[2] * 1.05 + 0.04;
+        var tgtR = m.c[0] * 2.45 + 0.12;
+        var tgtG = m.c[1] * 1.68 + 0.08;
+        var tgtB = m.c[2] * 1.06 + 0.04;
         lr += (tgtR - lr) * g; lg += (tgtG - lg) * g; lb += (tgtB - lb) * g;
       }
 
-      var jit = 0.972 + B.rng() * 0.056;
+      var jit = 0.970 + B.rng() * 0.060;
       var cr = m.c[0] * lr * jit, cg = m.c[1] * lg * jit, cb = m.c[2] * lb * jit;
       if (m.vary) {
-        var tv = 0.84 + 0.30 * C.noise2(x * 0.21, z * 0.21, B.tintSeed);
+        var tv = 0.82 + 0.34 * C.noise2(x * 0.23, z * 0.23, B.tintSeed);
         cr *= tv; cg *= tv; cb *= tv;
+      }
+      if (m.strata) {
+        var warp = C.snoise2(x * 0.28, z * 0.28, 97) * 0.65;
+        var band = 0.5 + 0.5 * Math.sin((y + warp) * 5.2);
+        var st = 1 - m.strata * 0.24 + m.strata * 0.34 * band;
+        cr *= st; cg *= st; cb *= st;
+      }
+      if (m.bark) {
+        var ang = Math.atan2(z, x);
+        var flute = 0.5 + 0.5 * Math.sin(ang * 22.0 + y * 0.9 + C.snoise2(ang * 3.0, y * 0.4, 51) * 1.6);
+        var bk = 1 - m.bark * 0.22 + m.bark * 0.28 * flute;
+        cr *= bk; cg *= bk; cb *= bk;
       }
 
       B.pos[i3] = x; B.pos[i3 + 1] = y; B.pos[i3 + 2] = z;
@@ -132,10 +142,7 @@
       B.ani[i] = anim || 0;
       B.pha[i] = phase === undefined ? B.rng() * C.TAU : phase;
       B.ao[i] = ao * sh;
-      // Zero for loose particles, near one for actual surfaces. The splat
-      // vertex shader uses this to turn a world normal into a screen-space
-      // ellipse without a full 3D covariance representation.
-      B.ori[i] = anim ? 0 : (m.noAO ? 0.55 : 0.9);
+      B.ori[i] = anim ? 0 : (m.noAO ? 0.55 : 0.92);
       return i;
     };
 
